@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-sand: #F4F7F1;
+  --fg-espresso: #163126;
+  --accent-sage: #587561;
+}
+
+body {
+  background-color: var(--bg-sand);
+  color: var(--fg-espresso);
+  font-family: "Aptos", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+::selection {
+  background: #C8DD9F;
+  color: #163126;
+}
+
+button,
+input,
+textarea,
+select {
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: #587561;
+  box-shadow: 0 0 0 3px rgba(88, 117, 97, 0.12);
+}
