@@ -436,15 +436,16 @@ create policy youth_pods_update_organization on public.youth_pods
     and public.get_current_profile_role() = 'organization'
   );
 
+-- Students see only their own talent profile. SMMEs/NGOs/sponsors (and admins) can
+-- see every student's profile so they can judge skills before making contact.
+-- Profiles hold no contact details (email/phone stay in auth and are never exposed).
 drop policy if exists talent_profiles_read_owner_or_matched on public.talent_profiles;
-create policy talent_profiles_read_owner_or_matched on public.talent_profiles
+drop policy if exists talent_profiles_read_owner_or_organizations on public.talent_profiles;
+create policy talent_profiles_read_owner_or_organizations on public.talent_profiles
   for select to authenticated
   using (
     user_id = auth.uid()
-    or (
-      public.get_current_profile_role() in ('organization', 'admin')
-      and public.is_matched_talent(talent_profiles.user_id, auth.uid())
-    )
+    or public.get_current_profile_role() in ('organization', 'admin')
   );
 
 drop policy if exists talent_profiles_insert_self on public.talent_profiles;

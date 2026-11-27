@@ -31,10 +31,12 @@ import {
   Send,
   Phone,
   Inbox,
+  UserRound,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
 import Modal from "./Modal";
+import StudentProfile from "./StudentProfile";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -386,6 +388,8 @@ export default function GeekArchiveApp() {
   const [contactFormProjectId, setContactFormProjectId] = useState(null);
   // The project an SMME/NGO has opened (its demo video autoplays).
   const [openProjectId, setOpenProjectId] = useState(null);
+  // The student whose profile an SMME/NGO is viewing.
+  const [viewProfileUserId, setViewProfileUserId] = useState(null);
   const [contactDraft, setContactDraft] = useState({ message: "", email: "", phone: "" });
   const [contactSending, setContactSending] = useState(false);
   const [contactError, setContactError] = useState("");
@@ -566,41 +570,39 @@ export default function GeekArchiveApp() {
     };
   }, [signedInUserId]);
 
-  // Load the signed-in student's own talent profile.
+  // Load talent profiles. Students get their own; SMMEs/NGOs get every student's
+  // (row-level security enforces both). Names come from the account/projects.
   useEffect(() => {
-    if (!supabase || !signedInUserId || !isYouth) return undefined;
+    if (!supabase || !signedInUserId) return undefined;
     let cancelled = false;
-    supabase
+    let query = supabase
       .from("talent_profiles")
       .select(
         "user_id, role, skills, portfolio_url, availability, preferred_focus, strength_area, experience_level, location"
-      )
-      .eq("user_id", signedInUserId)
-      .maybeSingle()
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
-          setTalentError(`Could not load your profile: ${error.message}`);
-          return;
-        }
-        if (!data) return;
-        setTalentProfiles((current) => [
-          {
-            id: `talent-${data.user_id}`,
-            userId: data.user_id,
-            name: user?.name || "",
-            role: data.role,
-            skills: data.skills || [],
-            portfolio: data.portfolio_url || "",
-            availability: data.availability || "",
-            preferredFocus: data.preferred_focus || "",
-            strengthArea: data.strength_area || "",
-            experienceLevel: data.experience_level || "Student / Junior",
-            location: data.location || "",
-          },
-          ...current.filter((profile) => profile.userId !== data.user_id),
-        ]);
-      });
+      );
+    if (isYouth) query = query.eq("user_id", signedInUserId);
+    query.then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) {
+        if (isYouth) setTalentError(`Could not load your profile: ${error.message}`);
+        return;
+      }
+      setTalentProfiles(
+        (data || []).map((row) => ({
+          id: `talent-${row.user_id}`,
+          userId: row.user_id,
+          name: row.user_id === signedInUserId ? user?.name || "" : "",
+          role: row.role,
+          skills: row.skills || [],
+          portfolio: row.portfolio_url || "",
+          availability: row.availability || "",
+          preferredFocus: row.preferred_focus || "",
+          strengthArea: row.strength_area || "",
+          experienceLevel: row.experience_level || "Student / Junior",
+          location: row.location || "",
+        }))
+      );
+    });
     return () => {
       cancelled = true;
     };
@@ -742,7 +744,7 @@ export default function GeekArchiveApp() {
       .sort((a, b) => b.score - a.score);
     const chosenProto = rankedProjects[0]?.score > 0 ? rankedProjects[0].project : null;
     const findTalentProfile = (role) => {
-      const candidates = talentProfiles.filter((profile) => profile.role === role);
+      const candidates = talentDirectory.filter((profile) => profile.role === role);
       if (!candidates.length) return null;
       const normalizedBrief = text.replace(/[^a-z0-9]+/g, " ").trim();
       const matched = candidates.find((profile) =>
@@ -1272,6 +1274,33 @@ export default function GeekArchiveApp() {
   // - Youth only ever see the projects they posted themselves (never another developer's).
   // - Organizations/sponsors can discover every project posted by youth talent.
   const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
+
+  // Every talent profile with a display name. Profiles loaded from the database for
+  // SMMEs don't carry a name, so it comes from the projects that student posted.
+  const ownerNames = new Map(
+    prototypes.filter((p) => p.ownerId && p.ownerName).map((p) => [p.ownerId, p.ownerName])
+  );
+  const talentDirectory = talentProfiles.map((profile) =>
+    profile.name ? profile : { ...profile, name: ownerNames.get(profile.userId) || "Student" }
+  );
+  const viewedProfile = viewProfileUserId
+    ? {
+        userId: viewProfileUserId,
+        profile: talentDirectory.find((p) => p.userId === viewProfileUserId) || null,
+        projects: prototypes.filter((p) => p.ownerId === viewProfileUserId),
+      }
+    : null;
+  if (viewedProfile) {
+    viewedProfile.name = viewedProfile.profile?.name || ownerNames.get(viewProfileUserId) || "Student";
+  }
+  const openStudentProfile = (userId) => {
+    setOpenProjectId(null);
+    setViewProfileUserId(userId);
+  };
+  const openProjectFromProfile = (projectId) => {
+    setViewProfileUserId(null);
+    setOpenProjectId(projectId);
+  };
   const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
   const youthPostedProjects = prototypes.filter((proto) => proto.ownerRole === "Youth Pod Talent");
   // Filter options come from what students actually posted. Matching ignores case,
@@ -2048,15 +2077,25 @@ export default function GeekArchiveApp() {
                       {member.profile && (
                         <div className="mt-2 space-y-1 text-[11px] text-[#6E5A4F]">
                           <p>Skills: {member.profile.skills.join(", ")}</p>
-                          <a
-                            href={member.profile.portfolio}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
-                          >
-                            <Link2 className="h-3 w-3" />
-                            View matched portfolio
-                          </a>
+                          <div className="flex flex-wrap gap-x-3 gap-y-1">
+                            <button
+                              type="button"
+                              onClick={() => openStudentProfile(member.profile.userId)}
+                              className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                            >
+                              <UserRound className="h-3 w-3" />
+                              View profile
+                            </button>
+                            <a
+                              href={member.profile.portfolio}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                            >
+                              <Link2 className="h-3 w-3" />
+                              Portfolio
+                            </a>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -2186,13 +2225,22 @@ export default function GeekArchiveApp() {
                         {proto.title}
                       </button>
                     </h3>
-                    <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-[#6E5A4F]">
+                    <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-[#6E5A4F]">
                       <Users className="h-3.5 w-3.5" />
                       Posted by <span className="font-semibold text-[#3B2314]">{proto.ownerName}</span>
                       {talentRoleFor(proto.ownerId) && <span>· {talentRoleFor(proto.ownerId)}</span>}
                       {proto.postedAt && (
                         <span>· {new Date(proto.postedAt).toLocaleDateString()}</span>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => openStudentProfile(proto.ownerId)}
+                        aria-label={`View ${proto.ownerName || "student"}'s profile`}
+                        className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#EEF4EE] px-2 py-0.5 font-semibold text-[#2F472F] hover:bg-[#DDEBD8]"
+                      >
+                        <UserRound className="h-3 w-3" />
+                        View profile
+                      </button>
                     </p>
                     {proto.summary && (
                       <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
@@ -2747,7 +2795,7 @@ export default function GeekArchiveApp() {
               <p className="text-xs leading-relaxed text-[#6E5A4F]">
                 {editingTalent
                   ? "Update anything that has changed, then save. Clearing an optional field removes it."
-                  : "Share the essentials so Geek Archive can connect you to the right project pod. Your profile is only shown to an organization when matched."}
+                  : "Share the essentials so Geek Archive can connect you to the right project pod. SMMEs, NGOs and sponsors can see your profile when they browse student projects. Your email and phone number are never shown."}
               </p>
 
               <div>
@@ -2898,7 +2946,7 @@ export default function GeekArchiveApp() {
                 <div>
                   <h2 className="text-lg font-bold text-[#2C1A10]">My profile</h2>
                   <p className="mt-1 text-xs text-[#6E5A4F]">
-                    Only your own profile appears in this dashboard.
+                    Visible to SMMEs, NGOs and sponsors. Your contact details stay private.
                   </p>
                 </div>
                 <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
@@ -3227,6 +3275,17 @@ export default function GeekArchiveApp() {
           size="xl"
           footer={
             <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+              {!isYouth && openProject.ownerRole === "Youth Pod Talent" && (
+                <button
+                  type="button"
+                  onClick={() => openStudentProfile(openProject.ownerId)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#163126] hover:bg-[#FAF8F5]"
+                >
+                  <UserRound className="h-3.5 w-3.5" />
+                  View {openProject.ownerName?.split(" ")[0] || "student"}&apos;s profile
+                </button>
+              )}
               {parseGitHubRepo(openProject.repo) ? (
                 <a
                   href={parseGitHubRepo(openProject.repo).url}
@@ -3240,6 +3299,7 @@ export default function GeekArchiveApp() {
               ) : (
                 <span className="text-xs text-[#8A786D]">No GitHub repository added yet.</span>
               )}
+              </div>
               {!isYouth && openProject.ownerRole === "Youth Pod Talent" && !sentRequestFor(openProject.id) && (
                 <button
                   type="button"
@@ -3285,6 +3345,24 @@ export default function GeekArchiveApp() {
               </div>
             </div>
           )}
+        </Modal>
+      )}
+
+      {viewedProfile && (
+        <Modal
+          open
+          onClose={() => setViewProfileUserId(null)}
+          title={`${viewedProfile.name}'s profile`}
+          subtitle="Student / developer on Geek Archive"
+          size="lg"
+        >
+          <StudentProfile
+            name={viewedProfile.name}
+            profile={viewedProfile.profile}
+            projects={viewedProfile.projects}
+            onOpenProject={openProjectFromProfile}
+            contactStatusFor={(projectId) => sentRequestFor(projectId)?.status}
+          />
         </Modal>
       )}
     </div>
