@@ -56,6 +56,11 @@ alter table public.prototypes add constraint prototypes_category_known
     'civic', 'ngo', 'ai', 'iot', 'energy', 'other'
   ));
 alter table public.prototypes add column if not exists showcased boolean not null default true;
+-- Uploaded demo video: "<owner user id>/<file name>" in the private demo-videos bucket.
+alter table public.prototypes add column if not exists demo_video_path text;
+alter table public.prototypes drop constraint if exists prototypes_demo_video_path_format;
+alter table public.prototypes add constraint prototypes_demo_video_path_format
+  check (demo_video_path is null or demo_video_path ~ '^[0-9a-f-]{36}/[A-Za-z0-9._-]{1,120}$');
 create index if not exists prototypes_category_idx on public.prototypes(category);
 alter table public.prototypes alter column completion_pct drop default;
 create index if not exists prototypes_created_by_idx on public.prototypes(created_by);
@@ -359,6 +364,9 @@ begin
     new.created_by := old.created_by;
     new.owner_display_name := old.owner_display_name;
     new.owner_role := old.owner_role;
+    if new.demo_video_path is not null and split_part(new.demo_video_path, '/', 1) <> new.created_by::text then
+      raise exception 'Demo video must be uploaded by the project owner';
+    end if;
     return new;
   end if;
 
@@ -368,6 +376,9 @@ begin
       into new.owner_display_name, new.owner_role
       from public.profiles p
      where p.id = auth.uid();
+  end if;
+  if new.demo_video_path is not null and split_part(new.demo_video_path, '/', 1) <> new.created_by::text then
+    raise exception 'Demo video must be uploaded by the project owner';
   end if;
   return new;
 end;
@@ -426,6 +437,7 @@ create policy prototypes_read_role_scoped on public.prototypes
             -- Students' projects: only the ones they chose to show, and only when both sides are verified.
             or (
               prototypes.showcased
+              and (prototypes.demo_video_path is not null or prototypes.demo_video_url is not null)
               and public.is_verified(auth.uid())
               and public.is_verified(prototypes.created_by)
             )
@@ -1024,3 +1036,51 @@ grant execute on function public.review_verification(uuid, text, text) to authen
 grant execute on function public.admin_list_verifications() to authenticated;
 grant execute on function public.record_popia_consent(text) to authenticated;
 grant execute on function public.delete_my_account() to authenticated;
+
+-- ---------------------------------------------------------------------------------
+-- Uploaded demo videos (Supabase Storage). Private bucket: videos are played through
+-- short-lived signed URLs. Students upload into their own folder (<user id>/...);
+-- the student and verified organisations (for shown projects of verified students)
+-- can read them. 50 MB limit (Supabase free tier maximum).
+-- ---------------------------------------------------------------------------------
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('demo-videos', 'demo-videos', false, 52428800, array['video/mp4', 'video/webm', 'video/quicktime'])
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists demo_videos_upload_own on storage.objects;
+create policy demo_videos_upload_own on storage.objects
+  for insert to authenticated
+  with check (
+    bucket_id = 'demo-videos'
+    and (storage.foldername(name))[1] = auth.uid()::text
+    and public.get_current_profile_role() in ('youth', 'admin')
+    and public.is_verified(auth.uid())
+  );
+
+drop policy if exists demo_videos_read on storage.objects;
+create policy demo_videos_read on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'demo-videos'
+    and (
+      (storage.foldername(name))[1] = auth.uid()::text
+      or (
+        public.get_current_profile_role() in ('organization', 'admin')
+        and public.is_verified(auth.uid())
+        and exists (
+          select 1 from public.prototypes p
+           where p.demo_video_path = storage.objects.name
+             and p.showcased
+             and public.is_verified(p.created_by)
+        )
+      )
+    )
+  );
+
+drop policy if exists demo_videos_delete_own on storage.objects;
+create policy demo_videos_delete_own on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'demo-videos' and (storage.foldername(name))[1] = auth.uid()::text);
