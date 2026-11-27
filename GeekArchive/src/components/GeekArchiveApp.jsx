@@ -22,6 +22,8 @@ import {
   MapPin,
   Menu,
   X,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
@@ -300,6 +302,9 @@ export default function GeekArchiveApp() {
   const [projectsLoadError, setProjectsLoadError] = useState("");
   const [projectSaving, setProjectSaving] = useState(false);
   const [projectError, setProjectError] = useState("");
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingProjectId, setDeletingProjectId] = useState(null);
   const [pods, setPods] = useState(SAMPLE_PODS);
   const [archiveQuery, setArchiveQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
@@ -510,7 +515,8 @@ export default function GeekArchiveApp() {
       setPrototypes([]); // The next person must only see what the database allows them to.
     }
     setUser(null);
-    setProjectError("");
+    clearProjectForm();
+    setConfirmDeleteId(null);
     setAuthPassword("");
     setAuthMode("signin");
     setShowAuthLanding(true);
@@ -628,27 +634,49 @@ export default function GeekArchiveApp() {
       postedAt: new Date().toISOString(),
     };
     const titleKey = created.title.toLowerCase();
-    // Posting again with the same name updates the poster's own project, never someone else's.
-    const existing = prototypes.find(
-      (project) =>
-        project.ownerId === user?.id &&
-        (project.title.toLowerCase() === titleKey ||
-          (project.aliases || []).some((alias) => alias.toLowerCase() === titleKey))
-    );
-    const merged = existing && {
-      summary: created.summary || existing.summary,
-      description: created.description || existing.description,
-      repo: created.repo || existing.repo,
-      stack: created.stack.length ? created.stack : existing.stack,
-      domain: created.domain || existing.domain,
-    };
+    const isOwnProject = (project) => project.ownerId === user?.id;
+    const hasName = (project) =>
+      project.title.toLowerCase() === titleKey ||
+      (project.aliases || []).some((alias) => alias.toLowerCase() === titleKey);
+
+    let existing;
+    let merged;
+    if (editingProjectId) {
+      // Editing: the form holds the full new version of the project, so empty fields clear.
+      existing = prototypes.find((project) => project.id === editingProjectId && isOwnProject(project));
+      if (!existing) {
+        setProjectError("You can only edit your own projects.");
+        return;
+      }
+      const clash = prototypes.find(
+        (project) => project.id !== existing.id && isOwnProject(project) && hasName(project)
+      );
+      if (clash) {
+        setProjectError(`You already have a project called "${clash.title}". Choose a different name.`);
+        return;
+      }
+      merged = {
+        title: created.title,
+        summary: created.summary,
+        description: created.description,
+        repo: created.repo,
+        stack: created.stack,
+        domain: created.domain,
+      };
+    } else {
+      // Posting again with the same name updates the poster's own project, never someone else's.
+      existing = prototypes.find((project) => isOwnProject(project) && hasName(project));
+      merged = existing && {
+        summary: created.summary || existing.summary,
+        description: created.description || existing.description,
+        repo: created.repo || existing.repo,
+        stack: created.stack.length ? created.stack : existing.stack,
+        domain: created.domain || existing.domain,
+      };
+    }
 
     const resetForm = () => {
-      setNewRepoTitle("");
-      setNewRepoUrl("");
-      setNewRepoDescription("");
-      setNewRepoStack("");
-      setAuditNote("");
+      clearProjectForm();
       setActiveTab("myprojects");
     };
 
@@ -673,6 +701,7 @@ export default function GeekArchiveApp() {
         setPrototypes((prev) =>
           existing ? prev.map((project) => (project.id === saved.id ? saved : project)) : [saved, ...prev]
         );
+        if (existing) syncMatchedPrototype(saved.id, saved);
         resetForm();
       } catch (err) {
         setProjectError(err?.message || "Could not save your project. Please try again.");
@@ -688,7 +717,64 @@ export default function GeekArchiveApp() {
         ? prev.map((project) => (project.id === existing.id ? { ...project, ...merged } : project))
         : [created, ...prev]
     );
+    if (existing) syncMatchedPrototype(existing.id, { ...existing, ...merged });
     resetForm();
+  };
+
+  const clearProjectForm = () => {
+    setNewRepoTitle("");
+    setNewRepoUrl("");
+    setNewRepoDescription("");
+    setNewRepoStack("");
+    setAuditNote("");
+    setEditingProjectId(null);
+    setProjectError("");
+  };
+
+  // Keep the "Suggested project" on the SMME match screen in step with edits/deletes.
+  const syncMatchedPrototype = (projectId, updated) =>
+    setMatchedResult((current) =>
+      current.prototype?.id === projectId ? { ...current, prototype: updated } : current
+    );
+
+  const handleStartEditProject = (project) => {
+    if (project.ownerId !== user?.id) return;
+    setEditingProjectId(project.id);
+    setConfirmDeleteId(null);
+    setProjectError("");
+    setNewRepoTitle(project.title);
+    setNewRepoUrl(project.repo || "");
+    setNewRepoDescription(project.description || "");
+    setNewRepoStack((project.stack || []).join(", "));
+    setAuditNote(project.domain || "");
+    document.getElementById("project-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handleDeleteProject = async (project) => {
+    if (project.ownerId !== user?.id || deletingProjectId) return;
+    setProjectError("");
+    if (supabase) {
+      setDeletingProjectId(project.id);
+      try {
+        const { data, error } = await supabase
+          .from("prototypes")
+          .delete()
+          .eq("id", project.id)
+          .select("id");
+        if (error) throw error;
+        if (!data?.length) throw new Error("This project could not be deleted.");
+      } catch (err) {
+        setProjectError(err?.message || "Could not delete the project. Please try again.");
+        setDeletingProjectId(null);
+        setConfirmDeleteId(null);
+        return;
+      }
+      setDeletingProjectId(null);
+    }
+    setPrototypes((prev) => prev.filter((p) => p.id !== project.id));
+    syncMatchedPrototype(project.id, null);
+    if (editingProjectId === project.id) clearProjectForm();
+    setConfirmDeleteId(null);
   };
 
   const handleAddTalent = (e) => {
@@ -775,16 +861,26 @@ export default function GeekArchiveApp() {
 
   const projectForm = (
     <form
+      id="project-form"
       onSubmit={handleIngestPrototype}
-      className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5"
+      className={`scroll-mt-24 space-y-4 rounded-2xl border bg-white p-6 lg:col-span-5 ${
+        editingProjectId ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]" : "border-[#E6DFD5]"
+      }`}
     >
       <div className="flex items-center gap-2">
-        <Layers className="h-5 w-5 text-[#5E7A5E]" />
-        <h2 className="text-lg font-bold text-[#2C1A10]">Post a project</h2>
+        {editingProjectId ? (
+          <Pencil className="h-5 w-5 text-[#5E7A5E]" />
+        ) : (
+          <Layers className="h-5 w-5 text-[#5E7A5E]" />
+        )}
+        <h2 className="text-lg font-bold text-[#2C1A10]">
+          {editingProjectId ? "Edit project" : "Post a project"}
+        </h2>
       </div>
       <p className="text-xs text-[#6E5A4F]">
-        Share something you built. SMMEs, NGOs and sponsors can discover it; other students and
-        developers cannot see it. To update it, post it again with the same name.
+        {editingProjectId
+          ? "Change any detail below and save. Clearing a field removes it from the project."
+          : "Share something you built. SMMEs, NGOs and sponsors can discover it; other students and developers cannot see it."}
       </p>
       <div>
         <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project name</label>
@@ -844,13 +940,25 @@ export default function GeekArchiveApp() {
           {projectError}
         </p>
       )}
-      <button
-        type="submit"
-        disabled={projectSaving}
-        className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
-      >
-        {projectSaving ? "Saving…" : "Post my project"}
-      </button>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={projectSaving}
+          className="flex-1 rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+        >
+          {projectSaving ? "Saving…" : editingProjectId ? "Save changes" : "Post my project"}
+        </button>
+        {editingProjectId && (
+          <button
+            type="button"
+            onClick={clearProjectForm}
+            disabled={projectSaving}
+            className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </form>
   );
 
@@ -1614,11 +1722,73 @@ export default function GeekArchiveApp() {
                 </div>
               ) : (
                 myProjects.map((proto) => (
-                  <article key={proto.id} className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
-                    {proto.domain && (
-                      <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                  <article
+                    key={proto.id}
+                    className={`rounded-2xl border bg-white p-5 ${
+                      editingProjectId === proto.id
+                        ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]"
+                        : "border-[#E6DFD5]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        {proto.domain && (
+                          <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                        )}
+                        <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                        {editingProjectId === proto.id && (
+                          <p className="text-[11px] font-semibold text-[#5E7A5E]">Editing…</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditProject(proto)}
+                          aria-label={`Edit ${proto.title}`}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#D8CFC4] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(proto.id)}
+                          aria-label={`Delete ${proto.title}`}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#E7C3BC] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#8A2C1E] hover:bg-[#FBEDEA]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Delete</span>
+                        </button>
+                      </div>
+                    </div>
+                    {confirmDeleteId === proto.id && (
+                      <div
+                        role="alertdialog"
+                        aria-label={`Confirm deleting ${proto.title}`}
+                        className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-3.5 py-2.5"
+                      >
+                        <p className="text-xs font-medium text-[#8A2C1E]">
+                          Delete this project? Organizations will no longer see it. This can&apos;t be undone.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteProject(proto)}
+                            disabled={deletingProjectId === proto.id}
+                            className="rounded-lg bg-[#A33A2A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#8A2C1E] disabled:opacity-70"
+                          >
+                            {deletingProjectId === proto.id ? "Deleting…" : "Yes, delete"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="rounded-lg border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314]"
+                          >
+                            Keep it
+                          </button>
+                        </div>
+                      </div>
                     )}
-                    <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
                     {proto.summary && (
                       <p className="mt-1 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
                     )}
