@@ -442,14 +442,20 @@ export default function GeekArchiveApp() {
   const [candidateAnswer, setCandidateAnswer] = useState("");
   const [interviewFeedback, setInterviewFeedback] = useState(null);
 
-  const youthMatchedMember = user
-    ? matchedResult.pod.find((member) => member.assignee.startsWith(`${user.name} ·`))
+  // Profiles belong to an account (userId), not a name, so students can rename themselves.
+  const ownTalentProfile = user?.id
+    ? talentProfiles.find((profile) => profile.userId === user.id) || null
+    : null;
+  const [editingTalent, setEditingTalent] = useState(false);
+  const [talentSaving, setTalentSaving] = useState(false);
+  const [talentError, setTalentError] = useState("");
+  const showTalentForm = !ownTalentProfile || editingTalent;
+
+  const youthMatchedMember = user?.id
+    ? matchedResult.pod.find((member) => member.profile?.userId === user.id)
     : null;
   const youthMatchedOpportunity =
     isYouth && youthMatchedMember ? matchedResult.prototype : null;
-  const ownTalentProfiles = talentProfiles.filter(
-    (profile) => profile.name.toLowerCase() === user?.name.toLowerCase()
-  );
 
   // Real accounts: when Supabase keys are set, restore the session and follow sign-in changes.
   useEffect(() => {
@@ -549,6 +555,47 @@ export default function GeekArchiveApp() {
     };
   }, [signedInUserId]);
 
+  // Load the signed-in student's own talent profile.
+  useEffect(() => {
+    if (!supabase || !signedInUserId || !isYouth) return undefined;
+    let cancelled = false;
+    supabase
+      .from("talent_profiles")
+      .select(
+        "user_id, role, skills, portfolio_url, availability, preferred_focus, strength_area, experience_level, location"
+      )
+      .eq("user_id", signedInUserId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setTalentError(`Could not load your profile: ${error.message}`);
+          return;
+        }
+        if (!data) return;
+        setTalentProfiles((current) => [
+          {
+            id: `talent-${data.user_id}`,
+            userId: data.user_id,
+            name: user?.name || "",
+            role: data.role,
+            skills: data.skills || [],
+            portfolio: data.portfolio_url || "",
+            availability: data.availability || "",
+            preferredFocus: data.preferred_focus || "",
+            strengthArea: data.strength_area || "",
+            experienceLevel: data.experience_level || "Student / Junior",
+            location: data.location || "",
+          },
+          ...current.filter((profile) => profile.userId !== data.user_id),
+        ]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedInUserId, isYouth]);
+
   const handleAuthSubmit = async (e, providerLabel = "Email") => {
     if (e) e.preventDefault();
     setAuthError("");
@@ -605,14 +652,18 @@ export default function GeekArchiveApp() {
         : "Zinhle Ndlovu"
       : nameFromEmail(authEmail) || "Tshepo Molefe";
 
+    // If this demo user already saved a profile, keep the name they chose there.
+    const demoId = demoUserId(derivedName);
+    const displayName =
+      talentProfiles.find((profile) => profile.userId === demoId)?.name || derivedName;
     setUser({
-      id: demoUserId(derivedName),
+      id: demoId,
       email: isOAuth ? "" : authEmail.trim(),
-      name: derivedName,
+      name: displayName,
       role: authRole,
       provider: providerLabel,
     });
-    setNewTalent((current) => ({ ...current, name: derivedName }));
+    setNewTalent((current) => ({ ...current, name: displayName }));
     setActiveTab(authRole === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
   };
@@ -623,8 +674,11 @@ export default function GeekArchiveApp() {
       // The next person must only see what the database allows them to.
       setPrototypes([]);
       setContactRequests([]);
+      setTalentProfiles([]);
     }
     setUser(null);
+    setEditingTalent(false);
+    setTalentError("");
     clearProjectForm();
     setConfirmDeleteId(null);
     closeContactForm();
@@ -1002,34 +1056,111 @@ export default function GeekArchiveApp() {
     setContactRequests((prev) => prev.map((r) => (r.id === request.id ? { ...r, status } : r)));
   };
 
-  const handleAddTalent = (e) => {
+  const handleAddTalent = async (e) => {
     e.preventDefault();
+    if (!isYouth || !user?.id || talentSaving) return;
+    setTalentError("");
     const profile = {
-      ...newTalent,
+      id: ownTalentProfile?.id || `talent-${user.id}`,
+      userId: user.id,
       name: newTalent.name.trim(),
-      id: `talent-${Date.now()}`,
+      role: newTalent.role,
       skills: uniqueList(newTalent.skills),
+      portfolio: newTalent.portfolio.trim(),
+      availability: newTalent.availability.trim(),
+      preferredFocus: newTalent.preferredFocus.trim(),
+      strengthArea: newTalent.strengthArea.trim(),
+      experienceLevel: newTalent.experienceLevel,
+      location: newTalent.location.trim(),
     };
-    setTalentProfiles((current) => {
-      const existing = current.findIndex(
-        (savedProfile) => savedProfile.name.toLowerCase() === profile.name.toLowerCase()
-      );
-      if (existing < 0) return [profile, ...current];
-      return current.map((savedProfile, index) =>
-        index === existing ? { ...profile, id: savedProfile.id } : savedProfile
-      );
-    });
-    setNewTalent({
-      name: user?.name || "",
-      role: "Developer",
-      skills: "",
-      portfolio: "",
-      availability: "",
-      preferredFocus: "",
-      strengthArea: "",
-      experienceLevel: "Student / Junior",
-      location: "",
-    });
+    if (!profile.name) {
+      setTalentError("Please enter your name.");
+      return;
+    }
+    if (!profile.skills.length) {
+      setTalentError("Please add at least one skill.");
+      return;
+    }
+
+    if (supabase) {
+      if (!signedInUserId) {
+        setTalentError("Please sign in to save your profile.");
+        return;
+      }
+      setTalentSaving(true);
+      try {
+        const { error } = await supabase.from("talent_profiles").upsert(
+          {
+            user_id: user.id,
+            role: profile.role,
+            skills: profile.skills,
+            portfolio_url: profile.portfolio,
+            availability: profile.availability,
+            preferred_focus: profile.preferredFocus || null,
+            strength_area: profile.strengthArea || null,
+            experience_level: profile.experienceLevel,
+            location: profile.location || null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" }
+        );
+        if (error) throw error;
+        if (profile.name !== user.name) {
+          const { error: nameError } = await supabase
+            .from("profiles")
+            .update({ display_name: profile.name })
+            .eq("id", user.id);
+          if (nameError) throw nameError;
+        }
+      } catch (err) {
+        setTalentError(err?.message || "Could not save your profile. Please try again.");
+        setTalentSaving(false);
+        return;
+      }
+      setTalentSaving(false);
+    }
+
+    setTalentProfiles((current) =>
+      current.some((saved) => saved.userId === user.id)
+        ? current.map((saved) => (saved.userId === user.id ? profile : saved))
+        : [profile, ...current]
+    );
+    // A name change shows everywhere: header, pod suggestions, etc.
+    if (profile.name !== user.name) setUser((current) => ({ ...current, name: profile.name }));
+    setMatchedResult((current) => ({
+      ...current,
+      pod: current.pod.map((member) =>
+        member.profile?.userId === user.id
+          ? { ...member, profile, assignee: `${profile.name} · ${profile.availability}` }
+          : member
+      ),
+    }));
+    setEditingTalent(false);
+  };
+
+  const talentFormFrom = (profile) => ({
+    name: profile?.name || user?.name || "",
+    role: profile?.role || "Developer",
+    skills: (profile?.skills || []).join(", "),
+    portfolio: profile?.portfolio || "",
+    availability: profile?.availability || "",
+    preferredFocus: profile?.preferredFocus || "",
+    strengthArea: profile?.strengthArea || "",
+    experienceLevel: profile?.experienceLevel || "Student / Junior",
+    location: profile?.location || "",
+  });
+
+  const handleStartEditTalent = () => {
+    if (!ownTalentProfile) return;
+    setTalentError("");
+    setNewTalent(talentFormFrom(ownTalentProfile));
+    setEditingTalent(true);
+  };
+
+  const handleCancelEditTalent = () => {
+    setTalentError("");
+    setNewTalent(talentFormFrom(null));
+    setEditingTalent(false);
   };
 
   const handleStakeholderSignOff = (podId) => {
@@ -1102,8 +1233,8 @@ export default function GeekArchiveApp() {
     setDiscoverSkill("");
     setDiscoverSector("");
   };
-  const talentRoleFor = (ownerName) =>
-    talentProfiles.find((profile) => profile.name.toLowerCase() === String(ownerName).toLowerCase())
+  const talentRoleFor = (ownerId) =>
+    talentProfiles.find((profile) => profile.userId === ownerId)
       ?.role;
 
   const projectForm = (
@@ -1958,7 +2089,7 @@ export default function GeekArchiveApp() {
                     <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-[#6E5A4F]">
                       <Users className="h-3.5 w-3.5" />
                       Posted by <span className="font-semibold text-[#3B2314]">{proto.ownerName}</span>
-                      {talentRoleFor(proto.ownerName) && <span>· {talentRoleFor(proto.ownerName)}</span>}
+                      {talentRoleFor(proto.ownerId) && <span>· {talentRoleFor(proto.ownerId)}</span>}
                       {proto.postedAt && (
                         <span>· {new Date(proto.postedAt).toLocaleDateString()}</span>
                       )}
@@ -2495,16 +2626,28 @@ export default function GeekArchiveApp() {
 
         {activeTab === "talent" && isYouth && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {showTalentForm && (
             <form
               onSubmit={handleAddTalent}
-              className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5"
+              aria-label={editingTalent ? "Edit my profile" : "Create my profile"}
+              className={`space-y-4 rounded-2xl border bg-white p-6 lg:col-span-5 ${
+                editingTalent ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]" : "border-[#E6DFD5]"
+              }`}
             >
               <div className="flex items-center gap-2">
-                <UserRoundPlus className="h-5 w-5 text-[#5E7A5E]" />
-                <h2 className="text-lg font-bold text-[#2C1A10]">My talent profile</h2>
+                {editingTalent ? (
+                  <Pencil className="h-5 w-5 text-[#5E7A5E]" />
+                ) : (
+                  <UserRoundPlus className="h-5 w-5 text-[#5E7A5E]" />
+                )}
+                <h2 className="text-lg font-bold text-[#2C1A10]">
+                  {editingTalent ? "Edit my profile" : "My talent profile"}
+                </h2>
               </div>
               <p className="text-xs leading-relaxed text-[#6E5A4F]">
-                Share the essentials so Geek Archive can connect you to the right project pod. Your profile is only shown to an organization when matched.
+                {editingTalent
+                  ? "Update anything that has changed, then save. Clearing an optional field removes it."
+                  : "Share the essentials so Geek Archive can connect you to the right project pod. Your profile is only shown to an organization when matched."}
               </p>
 
               <div>
@@ -2570,9 +2713,17 @@ export default function GeekArchiveApp() {
                 />
               </div>
 
-              <details className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-4 py-3">
+              <details
+                // Re-mount when switching to edit so filled-in optional details start open.
+                key={editingTalent ? "edit" : "create"}
+                open={
+                  editingTalent &&
+                  Boolean(newTalent.preferredFocus || newTalent.strengthArea || newTalent.location)
+                }
+                className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-4 py-3"
+              >
                 <summary className="cursor-pointer text-xs font-semibold text-[#3B2314]">
-                  Add optional matching details
+                  {editingTalent ? "Optional matching details" : "Add optional matching details"}
                 </summary>
                 <div className="mt-3 space-y-3">
                   <input
@@ -2615,15 +2766,34 @@ export default function GeekArchiveApp() {
                 </div>
               </details>
 
-              <button
-                type="submit"
-                className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
-              >
-                Save my profile
-              </button>
+              {talentError && (
+                <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                  {talentError}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={talentSaving}
+                  className="flex-1 rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+                >
+                  {talentSaving ? "Saving…" : editingTalent ? "Save changes" : "Save my profile"}
+                </button>
+                {editingTalent && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEditTalent}
+                    disabled={talentSaving}
+                    className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </form>
+            )}
 
-            <section className="space-y-4 lg:col-span-7">
+            <section className={`space-y-4 ${showTalentForm ? "lg:col-span-7" : "lg:col-span-8 lg:col-start-3"}`}>
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
                 <div>
                   <h2 className="text-lg font-bold text-[#2C1A10]">My profile</h2>
@@ -2632,11 +2802,11 @@ export default function GeekArchiveApp() {
                   </p>
                 </div>
                 <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
-                  {ownTalentProfiles.length ? "Profile saved" : "No profile yet"}
+                  {ownTalentProfile ? "Profile saved" : "No profile yet"}
                 </span>
               </div>
 
-              {ownTalentProfiles.length === 0 ? (
+              {!ownTalentProfile ? (
                 <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
                   <p className="font-semibold text-[#2C1A10]">Your profile starts here</p>
                   <p className="mt-1 text-sm text-[#6E5A4F]">
@@ -2644,16 +2814,37 @@ export default function GeekArchiveApp() {
                   </p>
                 </div>
               ) : (
-                ownTalentProfiles.map((profile) => (
-                  <article key={profile.id} className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                [ownTalentProfile].map((profile) => (
+                  <article
+                    key={profile.id}
+                    aria-label="My saved profile"
+                    className={`rounded-2xl border bg-white p-5 ${
+                      editingTalent ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]" : "border-[#E6DFD5]"
+                    }`}
+                  >
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-base font-bold text-[#2C1A10]">{profile.name}</p>
                         <p className="mt-0.5 text-xs font-semibold text-[#5E7A5E]">{profile.role}</p>
+                        {editingTalent && (
+                          <p className="text-[11px] font-semibold text-[#5E7A5E]">Editing…</p>
+                        )}
                       </div>
-                      <span className="rounded-full bg-[#FAF8F5] px-3 py-1 text-xs font-semibold text-[#3B2314]">
-                        {profile.availability}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="rounded-full bg-[#FAF8F5] px-3 py-1 text-xs font-semibold text-[#3B2314]">
+                          {profile.availability}
+                        </span>
+                        {!editingTalent && (
+                          <button
+                            type="button"
+                            onClick={handleStartEditTalent}
+                            className="inline-flex items-center gap-1 rounded-lg border border-[#D8CFC4] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Edit profile
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
                       {profile.skills.map((skill) => (
@@ -2710,7 +2901,7 @@ export default function GeekArchiveApp() {
                       className="rounded-lg border border-[#E6DFD5] bg-white p-3"
                     >
                       <p className="text-xs font-bold text-[#2C1A10]">
-                        {member.role}{member.assignee.startsWith(`${user.name} ·`) ? " · You" : ""}
+                        {member.role}{member.profile?.userId === user?.id ? " · You" : ""}
                       </p>
                       <p className="mt-1 text-xs text-[#5C493E]">{member.task}</p>
                     </div>
