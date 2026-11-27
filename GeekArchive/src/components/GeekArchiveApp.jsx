@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Sparkles,
   Users,
@@ -20,8 +20,195 @@ import {
   UserRoundPlus,
   Link2,
   MapPin,
+  Menu,
+  X,
+  Pencil,
+  Trash2,
+  Github,
+  PlayCircle,
+  Mail,
+  MessageSquare,
+  Send,
+  Phone,
+  Inbox,
+  Lock,
+  BadgeCheck,
+  UserRound,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
+import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
+import Modal from "./Modal";
+import StudentProfile from "./StudentProfile";
+import AiAnalysisPanel from "./AiAnalysisPanel";
+import VerificationCenter, { VerifiedBadge } from "./VerificationCenter";
+import AdminVerifications from "./AdminVerifications";
+import { ConsentGate, PrivacyCenter, PrivacyNotice } from "./Privacy";
+import { ACCOUNT_TYPES, POPIA_NOTICE_VERSION, isInstitutionEmail } from "../lib/verification";
+import { CATEGORIES, CATEGORY_BY_ID, categoryLabel, suggestCategory } from "../lib/categories";
+import GitHubImport from "./GitHubImport";
+import SearchSuggest, { matchProject } from "./SearchSuggest";
+import AiRecommendPanel from "./AiRecommendPanel";
+import LandingSections, { EventBadge } from "./LandingSections";
+import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
+import { supabase, isSupabaseConfigured } from "../lib/supabase";
+
+// Comma-separated input -> trimmed list without blanks or case-insensitive duplicates.
+const uniqueList = (value) => {
+  const seen = new Set();
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
+// --- Supabase <-> app mapping for the `prototypes` table ---------------------------
+// The embedding column is left out on purpose: it is large and the UI does not use it.
+const PROTOTYPE_COLUMNS =
+  "id, title, aliases, summary, description, repo_url, tech_stack, completion_pct, " +
+  "missing_modules, domain, demo_video_url, category, showcased, suggested_price, is_illustrative, included_tailoring, " +
+  "created_by, owner_display_name, owner_role, created_at";
+
+const ROLE_LABELS = { youth: "Youth Pod Talent", organization: "SMME / NGO", admin: "SMME / NGO" };
+
+const fromPrototypeRow = (row) => ({
+  id: row.id,
+  title: row.title,
+  aliases: row.aliases || [],
+  summary: row.summary || "",
+  description: row.description || "",
+  repo: row.repo_url || "",
+  demoVideo: row.demo_video_url || "",
+  category: row.category || "",
+  showcased: row.showcased !== false,
+  stack: row.tech_stack || [],
+  completion: row.completion_pct,
+  missing: row.missing_modules || [],
+  estimatedValue:
+    row.suggested_price == null ? null : `R${Number(row.suggested_price).toLocaleString("en-US")}`,
+  domain: row.domain || "",
+  illustrative: Boolean(row.is_illustrative),
+  includedTailoring: row.included_tailoring || [],
+  ownerId: row.created_by,
+  ownerName: row.owner_display_name || "",
+  ownerRole: ROLE_LABELS[row.owner_role],
+  postedAt: row.created_at,
+});
+
+// Only the fields a poster may set. Owner, name and role are stamped by the database.
+const toPrototypeRow = (project) => ({
+  ...(project.title ? { title: project.title } : {}),
+  summary: project.summary || "",
+  description: project.description || "",
+  repo_url: project.repo || null,
+  demo_video_url: project.demoVideo || null,
+  category: project.category || null,
+  ...(typeof project.showcased === "boolean" ? { showcased: project.showcased } : {}),
+  tech_stack: project.stack || [],
+  domain: project.domain || null,
+});
+
+// --- Supabase <-> app mapping for the `contact_requests` table ----------------------
+const CONTACT_COLUMNS =
+  "id, prototype_id, project_title, student_id, organization_id, organization_name, " +
+  "message, reply_email, reply_phone, status, created_at";
+
+const fromContactRow = (row) => ({
+  id: row.id,
+  projectId: row.prototype_id,
+  projectTitle: row.project_title || "",
+  studentId: row.student_id,
+  orgId: row.organization_id,
+  orgName: row.organization_name || "An organization",
+  message: row.message,
+  replyEmail: row.reply_email,
+  replyPhone: row.reply_phone || "",
+  status: row.status,
+  createdAt: row.created_at,
+});
+
+const CONTACT_MESSAGE_MIN = 10;
+const CONTACT_MESSAGE_MAX = 2000;
+
+// --- Verification records (Supabase <-> app) ---------------------------------------
+const VERIFICATION_COLUMNS =
+  "user_id, account_type, status, method, institution, evidence_url, github_username, " +
+  "org_name, registration_number, website, submitted_at, reviewed_at, review_note";
+
+const fromVerificationRow = (row, extra = {}) => ({
+  userId: row.user_id,
+  accountType: row.account_type,
+  status: row.status,
+  method: row.method,
+  institution: row.institution || "",
+  evidenceUrl: row.evidence_url || "",
+  githubUsername: row.github_username || "",
+  orgName: row.org_name || "",
+  registrationNumber: row.registration_number || "",
+  website: row.website || "",
+  submittedAt: row.submitted_at,
+  reviewedAt: row.reviewed_at,
+  reviewNote: row.review_note || "",
+  userName: row.display_name || extra.userName || "",
+  email: row.email || extra.email || "",
+});
+
+// Demo admin account for reviewing verification requests without Supabase.
+const DEMO_ADMIN_EMAIL = "admin@geekarchive.demo";
+
+// Demo mode has no real accounts, so a user is identified by their name.
+const demoUserId = (name) => `demo:${String(name || "").trim().toLowerCase()}`;
+
+// ["React", "react", "Flutter", ""] -> [{ key: "flutter", label: "Flutter", count: 1 },
+//                                     { key: "react", label: "React", count: 2 }]
+const countOptions = (values) => {
+  const byKey = new Map();
+  values.forEach((value) => {
+    const spelling = String(value || "").trim();
+    if (!spelling) return;
+    const key = spelling.toLowerCase();
+    const entry = byKey.get(key) || { key, count: 0, spellings: new Map() };
+    entry.count += 1;
+    entry.spellings.set(spelling, (entry.spellings.get(spelling) || 0) + 1);
+    byKey.set(key, entry);
+  });
+  // Show the most common spelling; on a tie prefer one that starts with a capital.
+  const startsUpper = (s) => (s[0] !== s[0].toLowerCase() ? 1 : 0);
+  return [...byKey.values()]
+    .map(({ key, count, spellings }) => ({
+      key,
+      count,
+      label: [...spellings.entries()].sort(
+        ([a, na], [b, nb]) => nb - na || startsUpper(b) - startsUpper(a)
+      )[0][0],
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+};
+
+// "Thandi Mokoena" -> "TM"
+const initialsOf = (name) =>
+  String(name || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0] || "")
+    .join("")
+    .toUpperCase() || "?";
+
+
+// "thandi.mokoena@example.co.za" -> "Thandi Mokoena"
+const nameFromEmail = (email) =>
+  email && email.includes("@")
+    ? email
+        .split("@")[0]
+        .replace(/[._-]+/g, " ")
+        .trim()
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+    : "";
 
 const INITIAL_PROTOTYPES = [
   {
@@ -136,32 +323,6 @@ const INITIAL_PROTOTYPES = [
   },
 ];
 
-const SAMPLE_PODS = [
-  {
-    id: "pod-101",
-    client: "Bra Joe's Tuckshop (Pretoria)",
-    prototype: "KasiLedger — Spaza Stock & Credit Tracker",
-    stage: "Stage 4: Live Staging & Sign-Off",
-    progress: 85,
-    members: [
-      { role: "Developer", name: "Thabo M.", focus: "Offline queue + API routes" },
-      { role: "UI/UX Designer", name: "Amahle K.", focus: "One-thumb mobile checkout" },
-      { role: "Business Student", name: "Lesedi N.", focus: "Weekly credit pitch & guide" },
-    ],
-  },
-  {
-    id: "pod-102",
-    client: "Sizanani Youth Skills NPC",
-    prototype: "UbuntuAid — Community Grant & Voucher Hub",
-    stage: "Stage 3: Pod Sprint Active",
-    progress: 55,
-    members: [
-      { role: "Developer", name: "Sipho D.", focus: "Supabase RLS + voucher status" },
-      { role: "UI/UX Designer", name: "Naledi R.", focus: "Low-data step wizard" },
-      { role: "Business Student", name: "Kamohelo T.", focus: "Donor reporting template" },
-    ],
-  },
-];
 
 const INTERVIEW_PROMPTS = {
   Developer:
@@ -172,22 +333,117 @@ const INTERVIEW_PROMPTS = {
     "How did you shape the pricing, handover steps, and value proposition so a small business can adopt the tool within its first week?",
 };
 
+// Shown in place of features that need a verified account.
+function VerifyGate({ title, text, status, onVerify, className = "" }) {
+  return (
+    <div className={`rounded-2xl border border-[#C8DD9F] bg-gradient-to-br from-[#F4F9EC] to-white p-6 ${className}`}>
+      <BadgeCheck className="h-7 w-7 text-[#5E7A5E]" />
+      <h2 className="mt-3 text-lg font-bold text-[#163126]">{title}</h2>
+      <p className="mt-1 text-sm text-[#3E4F46]">{text}</p>
+      {status === "pending" && (
+        <p className="mt-3 rounded-lg bg-[#FBF5E6] px-3 py-2 text-xs text-[#6B5320]">Your request is being reviewed.</p>
+      )}
+      <button
+        type="button"
+        onClick={onVerify}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2.5 text-sm font-semibold text-[#C8DD9F]"
+      >
+        <BadgeCheck className="h-4 w-4" />
+        {status === "pending" ? "View my request" : "Verify my account"}
+      </button>
+    </div>
+  );
+}
+
+// Small count bubble on a menu tab (e.g. unread messages). Screen readers hear ", 2 unread".
+function TabBadge({ count }) {
+  if (!count) return null;
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="min-w-[18px] rounded-full bg-[#C2410C] px-1.5 py-0.5 text-center text-[10px] font-bold leading-none text-white"
+      >
+        {count > 9 ? "9+" : count}
+      </span>
+      <span className="sr-only">, {count} unread</span>
+    </>
+  );
+}
+
 export default function GeekArchiveApp() {
   const [showAuthLanding, setShowAuthLanding] = useState(true);
   const [authMode, setAuthMode] = useState("signin");
   const [authRole, setAuthRole] = useState("Youth Pod Talent");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [user, setUser] = useState({
-    name: "Naledi Khumalo",
-    role: "Youth Pod Talent",
-    provider: "GitHub",
-  });
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  // Password recovery: true after the user opens the reset link from their email.
+  const [recoveringPassword, setRecoveringPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [recoveryMessage, setRecoveryMessage] = useState({ type: "", text: "" });
+  const [user, setUser] = useState(
+    isSupabaseConfigured
+      ? null
+      : {
+          id: demoUserId("Naledi Khumalo"),
+          name: "Naledi Khumalo",
+          role: "Youth Pod Talent",
+          provider: "Demo",
+        }
+  );
 
   const [activeTab, setActiveTab] = useState("talent");
-  const [prototypes, setPrototypes] = useState(INITIAL_PROTOTYPES);
-  const [pods, setPods] = useState(SAMPLE_PODS);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Close the mobile menu on Esc, or when the window grows to the desktop layout.
+  useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") setMobileMenuOpen(false);
+    };
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    const onResize = () => {
+      if (desktop.matches) setMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    desktop.addEventListener("change", onResize);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      desktop.removeEventListener("change", onResize);
+    };
+  }, [mobileMenuOpen]);
+  // With Supabase, projects come from the database (filtered by its access rules).
+  const [prototypes, setPrototypes] = useState(isSupabaseConfigured ? [] : INITIAL_PROTOTYPES);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsLoadError, setProjectsLoadError] = useState("");
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [projectError, setProjectError] = useState("");
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingProjectId, setDeletingProjectId] = useState(null);
+
+  // Contact requests from SMMEs/NGOs to students (one per organization per project).
+  const [contactRequests, setContactRequests] = useState([]);
+  const [contactFormProjectId, setContactFormProjectId] = useState(null);
+  // The project an SMME/NGO has opened (its demo video autoplays).
+  const [openProjectId, setOpenProjectId] = useState(null);
+  // The student whose profile an SMME/NGO is viewing.
+  const [viewProfileUserId, setViewProfileUserId] = useState(null);
+  const [contactDraft, setContactDraft] = useState({ message: "", email: "", phone: "" });
+  const [contactSending, setContactSending] = useState(false);
+  const [contactError, setContactError] = useState("");
+  const [respondingRequestId, setRespondingRequestId] = useState(null);
+  const [messagesError, setMessagesError] = useState("");
+  // Real pods: requested by verified SMMEs/NGOs, staffed with verified students.
+  const [pods, setPods] = useState([]);
+  const [podRequest, setPodRequest] = useState({ status: "idle", message: "" });
   const [archiveQuery, setArchiveQuery] = useState("");
+  const [discoverQuery, setDiscoverQuery] = useState("");
+  const [discoverSkill, setDiscoverSkill] = useState(""); // lower-case skill, "" = all
+  const [discoverCategory, setDiscoverCategory] = useState(""); // category id, "" = all
   const [talentProfiles, setTalentProfiles] = useState([]);
   const [newTalent, setNewTalent] = useState({
     name: "Naledi Khumalo",
@@ -200,17 +456,45 @@ export default function GeekArchiveApp() {
     experienceLevel: "Student / Junior",
     location: "",
   });
+  // Verification (by user id), POPIA consent and the related windows.
+  const [verifications, setVerifications] = useState({});
+  const [consents, setConsents] = useState({});
+  const [adminRequests, setAdminRequests] = useState([]);
+  const [showVerify, setShowVerify] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showNotice, setShowNotice] = useState(false);
+  const [signupConsent, setSignupConsent] = useState(false);
+
   const dashboardRole = user?.role || authRole;
   const isYouth = dashboardRole === "Youth Pod Talent";
-  const navTabs = isYouth
+  const isAdmin = Boolean(user?.isAdmin);
+  const myVerification = user?.id ? verifications[user.id] || null : null;
+  const isVerified = isAdmin || myVerification?.status === "verified";
+  // With Supabase, row-level security only returns verified students' work, so every
+  // loaded row is from a verified owner. In demo mode we check the local records.
+  const isOwnerVerified = (ownerId) => (supabase ? true : verifications[ownerId]?.status === "verified");
+  // Organisations must be verified to see student work, and students must be verified to be shown.
+  const canSeeStudentWork = (ownerId) => isVerified && isOwnerVerified(ownerId);
+  const consentAt = user?.consentAt || (user?.id ? consents[user.id] : null) || null;
+  const needsConsent = Boolean(user) && !showAuthLanding && !consentAt;
+  const navTabs = isAdmin
+    ? [
+        { id: "verifications", label: "Verifications" },
+        { id: "discover", label: "Discover projects" },
+        { id: "archive", label: "Browse projects" },
+      ]
+    : isYouth
     ? [
         { id: "opportunities", label: "Matched opportunities" },
         { id: "talent", label: "My profile" },
+        { id: "myprojects", label: "My projects" },
+        { id: "messages", label: "Messages" },
         { id: "pods", label: "My pods" },
         { id: "career", label: "Career proof" },
       ]
     : [
         { id: "match", label: "Describe a need" },
+        { id: "discover", label: "Discover projects" },
         { id: "archive", label: "Browse projects" },
         { id: "pods", label: "Pod workspace" },
       ];
@@ -231,6 +515,8 @@ export default function GeekArchiveApp() {
 
   const [newRepoTitle, setNewRepoTitle] = useState("");
   const [newRepoUrl, setNewRepoUrl] = useState("");
+  const [newRepoVideo, setNewRepoVideo] = useState("");
+  const [newRepoCategory, setNewRepoCategory] = useState("");
   const [newRepoDescription, setNewRepoDescription] = useState("");
   const [newRepoStack, setNewRepoStack] = useState("");
   const [auditNote, setAuditNote] = useState("");
@@ -239,41 +525,355 @@ export default function GeekArchiveApp() {
   const [candidateAnswer, setCandidateAnswer] = useState("");
   const [interviewFeedback, setInterviewFeedback] = useState(null);
 
-  const youthMatchedMember = user
-    ? matchedResult.pod.find((member) => member.assignee.startsWith(`${user.name} ·`))
+  // Profiles belong to an account (userId), not a name, so students can rename themselves.
+  const ownTalentProfile = user?.id
+    ? talentProfiles.find((profile) => profile.userId === user.id) || null
     : null;
-  const youthMatchedOpportunity =
-    isYouth && youthMatchedMember ? matchedResult.prototype : null;
-  const ownTalentProfiles = talentProfiles.filter(
-    (profile) => profile.name.toLowerCase() === user?.name.toLowerCase()
-  );
+  const [editingTalent, setEditingTalent] = useState(false);
+  const [talentSaving, setTalentSaving] = useState(false);
+  const [talentError, setTalentError] = useState("");
+  const [confirmDeleteTalent, setConfirmDeleteTalent] = useState(false);
+  const [talentDeleting, setTalentDeleting] = useState(false);
+  const showTalentForm = !ownTalentProfile || editingTalent;
 
-  const handleAuthSubmit = (e, providerLabel = "Email") => {
-    if (e) e.preventDefault();
-    const derivedName =
-      authEmail && authEmail.includes("@")
-        ? authEmail
-            .split("@")[0]
-            .replace(/[._-]+/g, " ")
-            .replace(/\w/g, (c) => c.toUpperCase())
-        : providerLabel === "GitHub"
-        ? "Kagiso Mokoena"
-        : providerLabel === "Google"
-        ? "Zinhle Ndlovu"
-        : "Tshepo Molefe";
+  // Pods this organisation requested / this student is assigned to.
+  const orgPods = pods.filter((pod) => pod.orgId && pod.orgId === user?.id);
+  const myPods = pods.filter((pod) => pod.members.some((m) => m.userId && m.userId === user?.id));
+  const myActivePods = myPods.filter((pod) => !pod.signedOff);
+  const myCredentials = myPods.filter((pod) => pod.signedOff);
+  const myRoleIn = (pod) => pod.members.find((m) => m.userId === user?.id);
 
-    setUser({
-      name: derivedName,
-      role: authRole,
-      provider: providerLabel,
+  // Real accounts: when Supabase keys are set, restore the session and follow sign-in changes.
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+
+    const applySession = async (session) => {
+      if (cancelled) return;
+      if (!session) {
+        setUser(null);
+        setShowAuthLanding(true);
+        return;
+      }
+      const authUser = session.user;
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("display_name, role, popia_consent_at")
+        .eq("id", authUser.id)
+        .maybeSingle();
+      if (cancelled) return;
+      const storedRole = profile?.role || authUser.user_metadata?.role;
+      const isAdminAccount = storedRole === "admin";
+      const role = isAdminAccount ? "Admin" : storedRole === "organization" ? "SMME / NGO" : "Youth Pod Talent";
+      const name =
+        profile?.display_name ||
+        authUser.user_metadata?.display_name ||
+        authUser.user_metadata?.full_name ||
+        nameFromEmail(authUser.email) ||
+        "Member";
+      setUser({
+        id: authUser.id,
+        name,
+        role,
+        email: authUser.email || "",
+        provider: authUser.app_metadata?.provider || "email",
+        isAdmin: isAdminAccount,
+        consentAt: profile?.popia_consent_at || null,
+      });
+      setNewTalent((current) => ({ ...current, name }));
+      setActiveTab(isAdminAccount ? "verifications" : role === "Youth Pod Talent" ? "talent" : "match");
+      setShowAuthLanding(false);
+    };
+
+    supabase.auth.getSession().then(({ data }) => applySession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") setRecoveringPassword(true);
+      // Deferred so Supabase isn't queried from inside its own auth callback.
+      setTimeout(() => applySession(session), 0);
     });
-    setNewTalent((current) => ({ ...current, name: derivedName }));
-    setActiveTab(authRole === "Youth Pod Talent" ? "talent" : "match");
+
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Load projects from Supabase whenever a real (non-demo) user signs in.
+  // Row-level security decides what comes back: SMMEs/NGOs get every active
+  // project; youth get only their own posts and projects they're assigned to.
+  const signedInUserId = user?.id && !user.id.startsWith("demo:") ? user.id : null;
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    setProjectsLoading(true);
+    setProjectsLoadError("");
+    supabase
+      .from("prototypes")
+      .select(PROTOTYPE_COLUMNS)
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setProjectsLoadError(`Could not load projects: ${error.message}`);
+        } else {
+          setPrototypes((data || []).map(fromPrototypeRow));
+        }
+        setProjectsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signedInUserId]);
+
+  // Load contact requests. RLS returns only requests this person sent (SMME/NGO)
+  // or received (student).
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    setMessagesError("");
+    supabase
+      .from("contact_requests")
+      .select(CONTACT_COLUMNS)
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) setMessagesError(`Could not load messages: ${error.message}`);
+        else setContactRequests((data || []).map(fromContactRow));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signedInUserId]);
+
+  // Load talent profiles. Students get their own; SMMEs/NGOs get every student's
+  // (row-level security enforces both). Names come from the account/projects.
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    let query = supabase
+      .from("talent_profiles")
+      .select(
+        "user_id, role, skills, portfolio_url, availability, preferred_focus, strength_area, experience_level, location"
+      );
+    if (isYouth) query = query.eq("user_id", signedInUserId);
+    query.then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) {
+        if (isYouth) setTalentError(`Could not load your profile: ${error.message}`);
+        return;
+      }
+      setTalentProfiles(
+        (data || []).map((row) => ({
+          id: `talent-${row.user_id}`,
+          userId: row.user_id,
+          name: row.user_id === signedInUserId ? user?.name || "" : "",
+          role: row.role,
+          skills: row.skills || [],
+          portfolio: row.portfolio_url || "",
+          availability: row.availability || "",
+          preferredFocus: row.preferred_focus || "",
+          strengthArea: row.strength_area || "",
+          experienceLevel: row.experience_level || "Student / Junior",
+          location: row.location || "",
+        }))
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedInUserId, isYouth]);
+
+  useEffect(() => {
+    if (supabase && signedInUserId) loadPods();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedInUserId]);
+
+  // Load this user's verification (and, for admins, the review queue).
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    (async () => {
+      let { data } = await supabase
+        .from("verifications")
+        .select(VERIFICATION_COLUMNS)
+        .eq("user_id", signedInUserId)
+        .maybeSingle();
+      // Back from linking GitHub: re-submit so the database checks the linked identity.
+      let pendingGitHub = null;
+      try {
+        pendingGitHub = window.localStorage.getItem("ga-verify-github");
+        if (pendingGitHub) window.localStorage.removeItem("ga-verify-github");
+      } catch {
+        pendingGitHub = null;
+      }
+      if (pendingGitHub && data?.status !== "verified") {
+        const res = await supabase
+          .from("verifications")
+          .upsert({ user_id: signedInUserId, account_type: pendingGitHub, method: "github_oauth" }, { onConflict: "user_id" })
+          .select(VERIFICATION_COLUMNS)
+          .single();
+        if (!res.error) data = res.data;
+      }
+      if (cancelled) return;
+      if (data) setVerifications({ [signedInUserId]: fromVerificationRow(data) });
+      if (user?.isAdmin) {
+        const { data: rows } = await supabase.rpc("admin_list_verifications");
+        if (!cancelled && rows) setAdminRequests(rows.map((row) => fromVerificationRow(row)));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedInUserId, user?.isAdmin]);
+
+  const handleAuthSubmit = async (e, providerLabel = "Email") => {
+    if (e) e.preventDefault();
+    setAuthError("");
+    setAuthNotice("");
+    const isOAuth = providerLabel === "Google" || providerLabel === "GitHub";
+
+    if (!isOAuth && authMode === "signup" && !signupConsent) {
+      setAuthError("Please agree to the privacy notice to create an account.");
+      return;
+    }
+
+    if (supabase) {
+      setAuthLoading(true);
+      try {
+        if (isOAuth) {
+          const { error } = await supabase.auth.signInWithOAuth({
+            provider: providerLabel.toLowerCase(),
+            options: { redirectTo: window.location.origin },
+          });
+          if (error) throw error;
+          return; // The browser now redirects to the provider.
+        }
+        if (authMode === "signup") {
+          const { data, error } = await supabase.auth.signUp({
+            email: authEmail.trim(),
+            password: authPassword,
+            options: {
+              data: {
+                display_name: nameFromEmail(authEmail),
+                role: authRole === "SMME / NGO" ? "organization" : "youth",
+                popia_consent_at: new Date().toISOString(),
+                popia_notice_version: POPIA_NOTICE_VERSION,
+              },
+            },
+          });
+          if (error) throw error;
+          if (!data.session) {
+            setAuthNotice("Check your email to confirm your account, then sign in.");
+            setAuthMode("signin");
+          }
+        } else {
+          const { error } = await supabase.auth.signInWithPassword({
+            email: authEmail.trim(),
+            password: authPassword,
+          });
+          if (error) throw error;
+        }
+        setAuthPassword("");
+      } catch (err) {
+        setAuthError(err?.message || "Something went wrong. Please try again.");
+      } finally {
+        setAuthLoading(false);
+      }
+      return;
+    }
+
+    // Demo mode (no Supabase keys): nothing is verified, a local demo user is created.
+    const derivedName = isOAuth
+      ? providerLabel === "GitHub"
+        ? "Kagiso Mokoena"
+        : "Zinhle Ndlovu"
+      : nameFromEmail(authEmail) || "Tshepo Molefe";
+
+    const demoAdmin = !isOAuth && authEmail.trim().toLowerCase() === DEMO_ADMIN_EMAIL;
+    // If this demo user already saved a profile, keep the name they chose there.
+    const demoId = demoAdmin ? "demo:admin" : demoUserId(derivedName);
+    const displayName = demoAdmin
+      ? "Geek Archive Admin"
+      : talentProfiles.find((profile) => profile.userId === demoId)?.name || derivedName;
+    if (!isOAuth && authMode === "signup" && signupConsent) {
+      setConsents((current) => ({ ...current, [demoId]: current[demoId] || new Date().toISOString() }));
+    }
+    setUser({
+      id: demoId,
+      email: isOAuth ? "" : authEmail.trim(),
+      name: displayName,
+      role: demoAdmin ? "Admin" : authRole,
+      provider: providerLabel,
+      isAdmin: demoAdmin,
+    });
+    setNewTalent((current) => ({ ...current, name: displayName }));
+    setActiveTab(demoAdmin ? "verifications" : authRole === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
   };
 
-  const handleSignOut = () => {
+  const handleForgotPassword = async () => {
+    setAuthError("");
+    setAuthNotice("");
+    if (!authEmail.trim().includes("@")) {
+      setAuthError("Enter your email address above first, then click “Forgot password?”.");
+      return;
+    }
+    setAuthLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(authEmail.trim(), {
+      redirectTo: window.location.origin,
+    });
+    setAuthLoading(false);
+    // Same message either way, so the form doesn't reveal which emails have accounts.
+    if (error && error.status !== 429) {
+      setAuthError(error.message);
+      return;
+    }
+    setAuthNotice(
+      error ? "Too many requests. Please wait a minute and try again." : "If that email has an account, we've sent a link to reset the password."
+    );
+  };
+
+  const handleSetNewPassword = async (e) => {
+    e.preventDefault();
+    if (newPassword.length < 8) {
+      setRecoveryMessage({ type: "error", text: "Use at least 8 characters." });
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setRecoveryMessage({ type: "error", text: error.message });
+      return;
+    }
+    setNewPassword("");
+    setRecoveryMessage({ type: "ok", text: "Your password has been changed." });
+    setRecoveringPassword(false);
+  };
+
+  const handleSignOut = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+      // The next person must only see what the database allows them to.
+      setPrototypes([]);
+      setContactRequests([]);
+      setTalentProfiles([]);
+      setPods([]);
+    }
     setUser(null);
+    setShowVerify(false);
+    setShowPrivacy(false);
+    setAdminRequests([]);
+    if (supabase) setVerifications({});
+    setEditingTalent(false);
+    setTalentError("");
+    setConfirmDeleteTalent(false);
+    setOpenProjectId(null);
+    clearProjectForm();
+    setConfirmDeleteId(null);
+    closeContactForm();
+    setMessagesError("");
+    setAuthPassword("");
     setAuthMode("signin");
     setShowAuthLanding(true);
   };
@@ -281,7 +881,12 @@ export default function GeekArchiveApp() {
   const handleExplorePlatform = () => {
     const role = authRole;
     const name = user?.name || "Preview User";
-    setUser((current) => ({ name, role, provider: current?.provider || "Preview" }));
+    setUser((current) => ({
+      id: current?.id || demoUserId(name),
+      name,
+      role,
+      provider: current?.provider || "Preview",
+    }));
     setNewTalent((current) => ({ ...current, name }));
     setActiveTab(role === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
@@ -292,6 +897,10 @@ export default function GeekArchiveApp() {
     const text = problemBrief.toLowerCase();
     const searchTerms = text.split(/[^a-z0-9]+/).filter((term) => term.length > 2);
     const rankedProjects = prototypes
+      .filter(
+        (project) =>
+          project.ownerRole !== "Youth Pod Talent" || (project.showcased !== false && canSeeStudentWork(project.ownerId))
+      )
       .map((project) => {
         const searchable = [
           project.title,
@@ -314,7 +923,9 @@ export default function GeekArchiveApp() {
       .sort((a, b) => b.score - a.score);
     const chosenProto = rankedProjects[0]?.score > 0 ? rankedProjects[0].project : null;
     const findTalentProfile = (role) => {
-      const candidates = talentProfiles.filter((profile) => profile.role === role);
+      const candidates = talentDirectory.filter(
+        (profile) => profile.role === role && canSeeStudentWork(profile.userId)
+      );
       if (!candidates.length) return null;
       const normalizedBrief = text.replace(/[^a-z0-9]+/g, " ").trim();
       const matched = candidates.find((profile) =>
@@ -362,92 +973,605 @@ export default function GeekArchiveApp() {
     });
   };
 
-  const handleIngestPrototype = (e) => {
+  const handleIngestPrototype = async (e) => {
     e.preventDefault();
-    if (!newRepoTitle.trim()) return;
+    // SMMEs/NGOs only view projects; posting is for youth talent.
+    if (!isYouth || !newRepoTitle.trim() || projectSaving) return;
+    setProjectError("");
+
     const created = {
       id: `proto-${Date.now()}`,
       title: newRepoTitle.trim(),
       summary: newRepoDescription.trim().split(/[.!?]/)[0] || "",
       description: newRepoDescription.trim(),
-      repo: newRepoUrl.trim(),
-      stack: newRepoStack
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
+      repo: parseGitHubRepo(newRepoUrl)?.url || newRepoUrl.trim(),
+      demoVideo: newRepoVideo.trim(),
+      // Pick from the form, or guess from what they wrote.
+      category: newRepoCategory || suggestCategory(newRepoTitle, newRepoDescription, newRepoStack, auditNote),
+      showcased: true,
+      stack: uniqueList(newRepoStack),
       completion: null,
       missing: [],
       estimatedValue: null,
       domain: auditNote.trim(),
+      ownerId: user?.id,
+      ownerName: user?.name,
+      ownerRole: user?.role,
+      postedAt: new Date().toISOString(),
     };
-    setPrototypes((prev) => {
-      const existing = prev.findIndex(
-        (project) =>
-          project.title.toLowerCase() === created.title.toLowerCase() ||
-          (project.aliases || []).some(
-            (alias) => alias.toLowerCase() === created.title.toLowerCase()
-          )
+    if (created.repo && !parseGitHubRepo(created.repo)) {
+      setProjectError("The GitHub link should look like https://github.com/your-name/your-repo");
+      return;
+    }
+    if (created.demoVideo && !toVideoEmbed(created.demoVideo)) {
+      setProjectError(`That demo video link can't be played. Use ${SUPPORTED_VIDEO_HINT}.`);
+      return;
+    }
+    const titleKey = created.title.toLowerCase();
+    const isOwnProject = (project) => project.ownerId === user?.id;
+    const hasName = (project) =>
+      project.title.toLowerCase() === titleKey ||
+      (project.aliases || []).some((alias) => alias.toLowerCase() === titleKey);
+
+    let existing;
+    let merged;
+    if (editingProjectId) {
+      // Editing: the form holds the full new version of the project, so empty fields clear.
+      existing = prototypes.find((project) => project.id === editingProjectId && isOwnProject(project));
+      if (!existing) {
+        setProjectError("You can only edit your own projects.");
+        return;
+      }
+      const clash = prototypes.find(
+        (project) => project.id !== existing.id && isOwnProject(project) && hasName(project)
       );
-      if (existing < 0) return [created, ...prev];
-      return prev.map((project, index) =>
-        index === existing
-          ? {
-              ...project,
-              summary: created.summary || project.summary,
-              description: created.description || project.description,
-              repo: created.repo || project.repo,
-              stack: created.stack.length ? created.stack : project.stack,
-              domain: created.domain || project.domain,
-            }
-          : project
-      );
-    });
+      if (clash) {
+        setProjectError(`You already have a project called "${clash.title}". Choose a different name.`);
+        return;
+      }
+      merged = {
+        title: created.title,
+        summary: created.summary,
+        description: created.description,
+        repo: created.repo,
+        demoVideo: created.demoVideo,
+        category: created.category,
+        stack: created.stack,
+        domain: created.domain,
+      };
+    } else {
+      // Posting again with the same name updates the poster's own project, never someone else's.
+      existing = prototypes.find((project) => isOwnProject(project) && hasName(project));
+      merged = existing && {
+        summary: created.summary || existing.summary,
+        description: created.description || existing.description,
+        repo: created.repo || existing.repo,
+        demoVideo: created.demoVideo || existing.demoVideo,
+        category: newRepoCategory || existing.category || created.category,
+        stack: created.stack.length ? created.stack : existing.stack,
+        domain: created.domain || existing.domain,
+      };
+    }
+
+    const resetForm = () => {
+      clearProjectForm();
+      setActiveTab("myprojects");
+    };
+
+    if (supabase) {
+      if (!user?.id || user.id.startsWith("demo:")) {
+        setProjectError("Please sign in to post a project.");
+        return;
+      }
+      setProjectSaving(true);
+      try {
+        const request = existing
+          ? supabase
+              .from("prototypes")
+              .update(toPrototypeRow(merged))
+              .eq("id", existing.id)
+          : supabase
+              .from("prototypes")
+              .insert({ ...toPrototypeRow(created), created_by: user.id });
+        const { data, error } = await request.select(PROTOTYPE_COLUMNS).single();
+        if (error) throw error;
+        const saved = fromPrototypeRow(data);
+        setPrototypes((prev) =>
+          existing ? prev.map((project) => (project.id === saved.id ? saved : project)) : [saved, ...prev]
+        );
+        if (existing) syncMatchedPrototype(saved.id, saved);
+        resetForm();
+      } catch (err) {
+        setProjectError(err?.message || "Could not save your project. Please try again.");
+      } finally {
+        setProjectSaving(false);
+      }
+      return;
+    }
+
+    // Demo mode: keep projects in memory only.
+    setPrototypes((prev) =>
+      existing
+        ? prev.map((project) => (project.id === existing.id ? { ...project, ...merged } : project))
+        : [created, ...prev]
+    );
+    if (existing) syncMatchedPrototype(existing.id, { ...existing, ...merged });
+    resetForm();
+  };
+
+  // "Owner/repo-name" -> "Repo Name"
+  const prettyRepoName = (name) =>
+    name.replace(/[-_.]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim().replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const handleImportRepos = async (repos) => {
+    if (!isYouth || !isVerified || !user?.id) return;
+    setProjectError("");
+    const existing = new Set(prototypes.filter((p) => p.ownerId === user.id).map((p) => (p.repo || "").toLowerCase()));
+    const fresh = repos.filter((r) => !existing.has(r.url.toLowerCase()));
+    const drafts = fresh.map((r, i) => ({
+      id: `proto-${Date.now()}-${i}`,
+      title: prettyRepoName(r.name),
+      summary: (r.description || "").split(/[.!?]/)[0] || "",
+      description: r.description || "",
+      repo: r.url,
+      demoVideo: "",
+      stack: uniqueList([r.language, ...(r.topics || []).slice(0, 5)].filter(Boolean).join(",")),
+      completion: null,
+      missing: [],
+      estimatedValue: null,
+      domain: "", // the category chip already shows this
+      category: r.category,
+      showcased: true,
+      ownerId: user.id,
+      ownerName: user.name,
+      ownerRole: user.role,
+      postedAt: new Date().toISOString(),
+    }));
+    if (!drafts.length) return;
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("prototypes")
+        .insert(drafts.map((d) => ({ ...toPrototypeRow(d), created_by: user.id })))
+        .select(PROTOTYPE_COLUMNS);
+      if (error) {
+        setProjectError(error.message);
+        return;
+      }
+      setPrototypes((prev) => [...data.map(fromPrototypeRow), ...prev]);
+      return;
+    }
+    setPrototypes((prev) => [...drafts, ...prev]);
+  };
+
+  const handleToggleShowcase = async (project) => {
+    if (project.ownerId !== user?.id) return;
+    const showcased = !(project.showcased !== false);
+    if (supabase) {
+      const { error } = await supabase.from("prototypes").update({ showcased }).eq("id", project.id);
+      if (error) {
+        setProjectError(error.message);
+        return;
+      }
+    }
+    setPrototypes((prev) => prev.map((p) => (p.id === project.id ? { ...p, showcased } : p)));
+  };
+
+  const clearProjectForm = () => {
     setNewRepoTitle("");
     setNewRepoUrl("");
+    setNewRepoVideo("");
+    setNewRepoCategory("");
     setNewRepoDescription("");
     setNewRepoStack("");
     setAuditNote("");
-    setActiveTab("archive");
+    setEditingProjectId(null);
+    setProjectError("");
   };
 
-  const handleAddTalent = (e) => {
+  // Keep the "Suggested project" on the SMME match screen in step with edits/deletes.
+  const syncMatchedPrototype = (projectId, updated) =>
+    setMatchedResult((current) =>
+      current.prototype?.id === projectId ? { ...current, prototype: updated } : current
+    );
+
+  const handleStartEditProject = (project) => {
+    if (project.ownerId !== user?.id) return;
+    setEditingProjectId(project.id);
+    setConfirmDeleteId(null);
+    setProjectError("");
+    setNewRepoTitle(project.title);
+    setNewRepoUrl(project.repo || "");
+    setNewRepoVideo(project.demoVideo || "");
+    setNewRepoCategory(project.category || "");
+    setNewRepoDescription(project.description || "");
+    setNewRepoStack((project.stack || []).join(", "));
+    setAuditNote(project.domain || "");
+    document.getElementById("project-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handleDeleteProject = async (project) => {
+    if (project.ownerId !== user?.id || deletingProjectId) return;
+    setProjectError("");
+    if (supabase) {
+      setDeletingProjectId(project.id);
+      try {
+        const { data, error } = await supabase
+          .from("prototypes")
+          .delete()
+          .eq("id", project.id)
+          .select("id");
+        if (error) throw error;
+        if (!data?.length) throw new Error("This project could not be deleted.");
+      } catch (err) {
+        setProjectError(err?.message || "Could not delete the project. Please try again.");
+        setDeletingProjectId(null);
+        setConfirmDeleteId(null);
+        return;
+      }
+      setDeletingProjectId(null);
+    }
+    setPrototypes((prev) => prev.filter((p) => p.id !== project.id));
+    syncMatchedPrototype(project.id, null);
+    if (editingProjectId === project.id) clearProjectForm();
+    setConfirmDeleteId(null);
+  };
+
+  // --- Contacting students ---------------------------------------------------------
+  const openContactForm = (project) => {
+    setContactFormProjectId(project.id);
+    setContactError("");
+    setContactDraft({
+      message: `Hi ${project.ownerName?.split(" ")[0] || "there"}, we're interested in "${project.title}" and would like to talk about working together.`,
+      email: user?.email && user.email.includes("@") ? user.email : "",
+      phone: "",
+    });
+  };
+
+  const closeContactForm = () => {
+    setContactFormProjectId(null);
+    setContactError("");
+    setContactDraft({ message: "", email: "", phone: "" });
+  };
+
+  // The request this SMME/NGO already sent about a project, if any.
+  const sentRequestFor = (projectId) =>
+    contactRequests.find((request) => request.projectId === projectId && request.orgId === user?.id);
+
+  const handleSendContactRequest = async (e, project) => {
     e.preventDefault();
-    const profile = {
-      ...newTalent,
-      name: newTalent.name.trim(),
-      id: `talent-${Date.now()}`,
-      skills: newTalent.skills
-        .split(",")
-        .map((skill) => skill.trim())
-        .filter(Boolean),
-    };
-    setTalentProfiles((current) => {
-      const existing = current.findIndex(
-        (savedProfile) => savedProfile.name.toLowerCase() === profile.name.toLowerCase()
-      );
-      if (existing < 0) return [profile, ...current];
-      return current.map((savedProfile, index) =>
-        index === existing ? { ...profile, id: savedProfile.id } : savedProfile
-      );
-    });
-    setNewTalent({
-      name: user?.name || "",
-      role: "Developer",
-      skills: "",
-      portfolio: "",
-      availability: "",
-      preferredFocus: "",
-      strengthArea: "",
-      experienceLevel: "Student / Junior",
-      location: "",
-    });
+    if (isYouth || contactSending) return;
+    const message = contactDraft.message.trim();
+    const email = contactDraft.email.trim();
+    const phone = contactDraft.phone.trim();
+    if (message.length < CONTACT_MESSAGE_MIN) {
+      setContactError(`Please write a message of at least ${CONTACT_MESSAGE_MIN} characters.`);
+      return;
+    }
+    if (sentRequestFor(project.id)) {
+      setContactError("You've already contacted this student about this project.");
+      return;
+    }
+    setContactError("");
+
+    if (supabase) {
+      if (!signedInUserId) {
+        setContactError("Please sign in to contact students.");
+        return;
+      }
+      setContactSending(true);
+      try {
+        // Student, organization name and project title are filled in by the database.
+        const { data, error } = await supabase
+          .from("contact_requests")
+          .insert({
+            prototype_id: project.id,
+            organization_id: user.id,
+            message,
+            reply_email: email,
+            reply_phone: phone || null,
+          })
+          .select(CONTACT_COLUMNS)
+          .single();
+        if (error) throw error;
+        setContactRequests((prev) => [fromContactRow(data), ...prev]);
+        closeContactForm();
+      } catch (err) {
+        setContactError(err?.message || "Could not send your message. Please try again.");
+      } finally {
+        setContactSending(false);
+      }
+      return;
+    }
+
+    // Demo mode: keep requests in memory.
+    setContactRequests((prev) => [
+      {
+        id: `contact-${Date.now()}`,
+        projectId: project.id,
+        projectTitle: project.title,
+        studentId: project.ownerId,
+        orgId: user?.id,
+        orgName: user?.name || "An organization",
+        message,
+        replyEmail: email,
+        replyPhone: phone,
+        status: "new",
+        createdAt: new Date().toISOString(),
+      },
+      ...prev,
+    ]);
+    closeContactForm();
   };
 
-  const handleStakeholderSignOff = (podId) => {
+  // Student answers a request: "interested" or "declined".
+  const handleRespondToRequest = async (request, status) => {
+    if (!isYouth || request.studentId !== user?.id || respondingRequestId) return;
+    setMessagesError("");
+    if (supabase) {
+      setRespondingRequestId(request.id);
+      try {
+        const { data, error } = await supabase
+          .from("contact_requests")
+          .update({ status })
+          .eq("id", request.id)
+          .select(CONTACT_COLUMNS)
+          .single();
+        if (error) throw error;
+        const saved = fromContactRow(data);
+        setContactRequests((prev) => prev.map((r) => (r.id === saved.id ? saved : r)));
+      } catch (err) {
+        setMessagesError(err?.message || "Could not save your answer. Please try again.");
+      } finally {
+        setRespondingRequestId(null);
+      }
+      return;
+    }
+    setContactRequests((prev) => prev.map((r) => (r.id === request.id ? { ...r, status } : r)));
+  };
+
+  const handleAddTalent = async (e) => {
+    e.preventDefault();
+    if (!isYouth || !user?.id || talentSaving) return;
+    setTalentError("");
+    const profile = {
+      id: ownTalentProfile?.id || `talent-${user.id}`,
+      userId: user.id,
+      name: newTalent.name.trim(),
+      role: newTalent.role,
+      skills: uniqueList(newTalent.skills),
+      portfolio: newTalent.portfolio.trim(),
+      availability: newTalent.availability.trim(),
+      preferredFocus: newTalent.preferredFocus.trim(),
+      strengthArea: newTalent.strengthArea.trim(),
+      experienceLevel: newTalent.experienceLevel,
+      location: newTalent.location.trim(),
+    };
+    if (!profile.name) {
+      setTalentError("Please enter your name.");
+      return;
+    }
+    if (!profile.skills.length) {
+      setTalentError("Please add at least one skill.");
+      return;
+    }
+
+    if (supabase) {
+      if (!signedInUserId) {
+        setTalentError("Please sign in to save your profile.");
+        return;
+      }
+      setTalentSaving(true);
+      try {
+        const { error } = await supabase.from("talent_profiles").upsert(
+          {
+            user_id: user.id,
+            role: profile.role,
+            skills: profile.skills,
+            portfolio_url: profile.portfolio,
+            availability: profile.availability,
+            preferred_focus: profile.preferredFocus || null,
+            strength_area: profile.strengthArea || null,
+            experience_level: profile.experienceLevel,
+            location: profile.location || null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" }
+        );
+        if (error) throw error;
+        if (profile.name !== user.name) {
+          const { error: nameError } = await supabase
+            .from("profiles")
+            .update({ display_name: profile.name })
+            .eq("id", user.id);
+          if (nameError) throw nameError;
+        }
+      } catch (err) {
+        setTalentError(err?.message || "Could not save your profile. Please try again.");
+        setTalentSaving(false);
+        return;
+      }
+      setTalentSaving(false);
+    }
+
+    setTalentProfiles((current) =>
+      current.some((saved) => saved.userId === user.id)
+        ? current.map((saved) => (saved.userId === user.id ? profile : saved))
+        : [profile, ...current]
+    );
+    // A name change shows everywhere: header, pod suggestions, etc.
+    if (profile.name !== user.name) setUser((current) => ({ ...current, name: profile.name }));
+    setMatchedResult((current) => ({
+      ...current,
+      pod: current.pod.map((member) =>
+        member.profile?.userId === user.id
+          ? { ...member, profile, assignee: `${profile.name} · ${profile.availability}` }
+          : member
+      ),
+    }));
+    setEditingTalent(false);
+  };
+
+  const talentFormFrom = (profile) => ({
+    name: profile?.name || user?.name || "",
+    role: profile?.role || "Developer",
+    skills: (profile?.skills || []).join(", "),
+    portfolio: profile?.portfolio || "",
+    availability: profile?.availability || "",
+    preferredFocus: profile?.preferredFocus || "",
+    strengthArea: profile?.strengthArea || "",
+    experienceLevel: profile?.experienceLevel || "Student / Junior",
+    location: profile?.location || "",
+  });
+
+  const handleStartEditTalent = () => {
+    if (!ownTalentProfile) return;
+    setTalentError("");
+    setNewTalent(talentFormFrom(ownTalentProfile));
+    setEditingTalent(true);
+  };
+
+  const handleCancelEditTalent = () => {
+    setTalentError("");
+    setNewTalent(talentFormFrom(null));
+    setEditingTalent(false);
+  };
+
+  // Deleting the profile only removes the student from pod matching. Their account,
+  // projects and messages stay, and they can create a new profile at any time.
+  const handleDeleteTalent = async () => {
+    if (!isYouth || !ownTalentProfile || talentDeleting) return;
+    setTalentError("");
+    if (supabase) {
+      if (!signedInUserId) {
+        setTalentError("Please sign in to delete your profile.");
+        return;
+      }
+      setTalentDeleting(true);
+      try {
+        const { data, error } = await supabase
+          .from("talent_profiles")
+          .delete()
+          .eq("user_id", user.id)
+          .select("user_id");
+        if (error) throw error;
+        if (!data?.length) throw new Error("Your profile could not be deleted.");
+      } catch (err) {
+        setTalentError(err?.message || "Could not delete your profile. Please try again.");
+        setTalentDeleting(false);
+        setConfirmDeleteTalent(false);
+        return;
+      }
+      setTalentDeleting(false);
+    }
+    setTalentProfiles((current) => current.filter((profile) => profile.userId !== user.id));
+    // Take the student out of any suggested pod they were matched into.
+    setMatchedResult((current) => ({
+      ...current,
+      pod: current.pod.map((member) =>
+        member.profile?.userId === user.id
+          ? { ...member, profile: null, assignee: "No profile yet — add talent" }
+          : member
+      ),
+    }));
+    setNewTalent(talentFormFrom(null));
+    setEditingTalent(false);
+    setConfirmDeleteTalent(false);
+  };
+
+  // Load pods from Supabase. RLS returns an organisation's own pods, and for a student
+  // only pods they're assigned to (and only their own member row).
+  const loadPods = async () => {
+    if (!supabase) return;
+    const { data: podRows, error } = await supabase
+      .from("youth_pods")
+      .select("id, organization_id, prototype_id, stage, progress_pct, stakeholder_signed_off, signed_off_at, created_at, organization_name, project_title, need")
+      .order("created_at", { ascending: false });
+    if (error || !podRows) return;
+    const ids = podRows.map((p) => p.id);
+    const { data: memberRows } = ids.length
+      ? await supabase.from("youth_pod_members").select("pod_id, user_id, role, task").in("pod_id", ids)
+      : { data: [] };
+    const userIds = [...new Set((memberRows || []).map((m) => m.user_id))];
+    const { data: nameRows } = userIds.length
+      ? await supabase.from("profiles").select("id, display_name").in("id", userIds)
+      : { data: [] };
+    const names = new Map((nameRows || []).map((r) => [r.id, r.display_name]));
+    setPods(
+      podRows.map((p) => ({
+        id: p.id,
+        orgId: p.organization_id,
+        orgName: p.organization_name || "An organisation",
+        prototypeId: p.prototype_id,
+        projectTitle: p.project_title || "Project",
+        need: p.need || "",
+        stage: p.stage,
+        progress: p.progress_pct,
+        signedOff: p.stakeholder_signed_off,
+        signedOffAt: p.signed_off_at,
+        createdAt: p.created_at,
+        members: (memberRows || [])
+          .filter((m) => m.pod_id === p.id)
+          .map((m) => ({ role: m.role, task: m.task, userId: m.user_id, name: names.get(m.user_id) || null })),
+      }))
+    );
+  };
+
+  const handleRequestPod = async () => {
+    const project = matchedResult.prototype;
+    if (isYouth || !isVerified || !project) return;
+    setPodRequest({ status: "loading", message: "" });
+    if (supabase) {
+      const { error } = await supabase.rpc("request_youth_pod", {
+        p_org_type: orgType,
+        p_raw_brief: problemBrief,
+        p_prototype_id: project.id,
+      });
+      if (error) {
+        setPodRequest({ status: "error", message: error.message });
+        return;
+      }
+      await loadPods();
+    } else {
+      setPods((prev) => [
+        {
+          id: `pod-${Date.now()}`,
+          orgId: user.id,
+          orgName: user.name,
+          prototypeId: project.id,
+          projectTitle: project.title,
+          need: problemBrief.trim(),
+          stage: "Pod matching in progress",
+          progress: 0,
+          signedOff: false,
+          signedOffAt: null,
+          createdAt: new Date().toISOString(),
+          members: matchedResult.pod.map((m) => ({
+            role: m.role,
+            task: m.task,
+            userId: m.profile?.userId || null,
+            name: m.profile?.name || null,
+          })),
+        },
+        ...prev,
+      ]);
+    }
+    setPodRequest({ status: "done", message: `Pod requested for ${project.title}. The assigned students can now see it.` });
+    setActiveTab("pods");
+  };
+
+  const handleStakeholderSignOff = async (podId) => {
+    if (supabase) {
+      const { error } = await supabase.rpc("sign_off_youth_pod", { p_pod_id: podId });
+      if (error) {
+        setPodRequest({ status: "error", message: error.message });
+        return;
+      }
+    }
+    const now = new Date().toISOString();
     setPods((prev) =>
       prev.map((p) =>
         p.id === podId
-          ? { ...p, progress: 100, stage: "Verified Shipped & Credential Issued" }
+          ? { ...p, progress: 100, signedOff: true, signedOffAt: now, stage: "Verified Shipped & Credential Issued" }
           : p
       )
     );
@@ -456,7 +1580,10 @@ export default function GeekArchiveApp() {
   const handleEvaluateInterview = (e) => {
     e.preventDefault();
     const wordCount = candidateAnswer.trim().split(/\s+/).filter(Boolean).length;
-    const score = wordCount >= 25 ? "8.8 / 10" : wordCount >= 10 ? "7.4 / 10" : "5.8 / 10";
+    // Simple automatic practice scoring (length + concrete detail). Not an assessment.
+    const hasNumber = /\d/.test(candidateAnswer);
+    const base = wordCount >= 60 ? 7 : wordCount >= 25 ? 6 : wordCount >= 10 ? 4.5 : 3;
+    const score = `${Math.min(10, base + (hasNumber ? 1 : 0)).toFixed(1)} / 10`;
     setInterviewFeedback({
       score,
       strength:
@@ -467,6 +1594,7 @@ export default function GeekArchiveApp() {
   };
 
   const visiblePrototypes = prototypes.filter((proto) => {
+    if (proto.ownerRole === "Youth Pod Talent" && (proto.showcased === false || !canSeeStudentWork(proto.ownerId))) return false;
     const searchable = [
       proto.title,
       proto.domain,
@@ -480,9 +1608,371 @@ export default function GeekArchiveApp() {
     return searchable.includes(archiveQuery.trim().toLowerCase());
   });
 
+  // Who sees what:
+  // - Youth only ever see the projects they posted themselves (never another developer's).
+  // - Organizations/sponsors can discover every project posted by youth talent.
+  // --- Verification, consent and POPIA rights ----------------------------------------
+  const adminRequestList = supabase ? adminRequests : Object.values(verifications);
+
+  const handleSubmitVerification = async (record) => {
+    if (!user?.id) return;
+    const base = { ...record, userId: user.id, userName: user.name, email: user.email || "" };
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("verifications")
+        .upsert(
+          {
+            user_id: user.id,
+            account_type: record.accountType,
+            method: record.method,
+            institution: record.institution || null,
+            evidence_url: record.evidenceUrl || null,
+            github_username: record.githubUsername || null,
+            org_name: record.orgName || null,
+            registration_number: record.registrationNumber || null,
+            website: record.website || null,
+          },
+          { onConflict: "user_id" }
+        )
+        .select(VERIFICATION_COLUMNS)
+        .single();
+      if (error) throw error;
+      setVerifications((current) => ({ ...current, [user.id]: fromVerificationRow(data, base) }));
+      return;
+    }
+    // Demo mode: university emails and GitHub checks verify instantly; the rest wait for an admin.
+    const instant =
+      (record.method === "institution_email" && isInstitutionEmail(user.email)) || record.method === "github_bio";
+    const now = new Date().toISOString();
+    setVerifications((current) => ({
+      ...current,
+      [user.id]: {
+        ...base,
+        status: instant ? "verified" : "pending",
+        submittedAt: now,
+        reviewedAt: instant ? now : null,
+        reviewNote: "",
+      },
+    }));
+  };
+
+  const handleLinkGitHub = async (accountType) => {
+    // Remember what to finish after GitHub sends the user back.
+    try {
+      window.localStorage.setItem("ga-verify-github", accountType);
+    } catch {
+      // Storage unavailable: the user can press "Connect GitHub" again after returning.
+    }
+    const { error } = await supabase.auth.linkIdentity({
+      provider: "github",
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) throw error;
+  };
+
+  const handleReviewVerification = async (userId, decision, note) => {
+    if (!isAdmin) return;
+    if (supabase) {
+      const { error } = await supabase.rpc("review_verification", {
+        p_user_id: userId,
+        p_decision: decision,
+        p_note: note || null,
+      });
+      if (error) throw error;
+      setAdminRequests((current) =>
+        current.map((r) => (r.userId === userId ? { ...r, status: decision, reviewNote: note, reviewedAt: new Date().toISOString() } : r))
+      );
+      return;
+    }
+    setVerifications((current) => ({
+      ...current,
+      [userId]: { ...current[userId], status: decision, reviewNote: note, reviewedAt: new Date().toISOString() },
+    }));
+  };
+
+  const handleConsent = async () => {
+    if (!user?.id) return;
+    const now = new Date().toISOString();
+    if (supabase) {
+      const { error } = await supabase.rpc("record_popia_consent", { p_version: POPIA_NOTICE_VERSION });
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+      setUser((current) => ({ ...current, consentAt: now }));
+      return;
+    }
+    setConsents((current) => ({ ...current, [user.id]: now }));
+  };
+
+  const myMessages = contactRequests.filter((r) => r.studentId === user?.id || r.orgId === user?.id);
+  const privacySummary = [
+    { label: "Name", value: user?.name || "—" },
+    { label: "Email", value: user?.email || "—" },
+    { label: "Role", value: user?.role || "—" },
+    { label: "Verification", value: myVerification ? `${ACCOUNT_TYPES[myVerification.accountType]?.label || ""} · ${myVerification.status}` : "Not started" },
+    ...(isYouth
+      ? [
+          { label: "Talent profile", value: ownTalentProfile ? "Saved" : "None" },
+          { label: "Projects", value: String(prototypes.filter((p) => p.ownerId === user?.id).length) },
+        ]
+      : []),
+    { label: "Messages", value: String(myMessages.length) },
+  ];
+
+  const buildMyDataExport = () => ({
+    exportedAt: new Date().toISOString(),
+    privacyNoticeVersion: POPIA_NOTICE_VERSION,
+    account: { id: user?.id, name: user?.name, email: user?.email, role: user?.role, consentAt },
+    verification: myVerification,
+    talentProfile: ownTalentProfile,
+    projects: prototypes.filter((p) => p.ownerId === user?.id),
+    messages: myMessages,
+  });
+
+  const handleDeleteAccount = async () => {
+    if (!user?.id) return;
+    const id = user.id;
+    if (supabase) {
+      const { error } = await supabase.rpc("delete_my_account");
+      if (error) throw error;
+    } else {
+      setTalentProfiles((current) => current.filter((p) => p.userId !== id));
+      setPrototypes((current) => current.filter((p) => p.ownerId !== id));
+      setContactRequests((current) => current.filter((r) => r.studentId !== id && r.orgId !== id));
+      // Remove them from pods: their own pods go, and their seat in others is emptied.
+      setPods((current) =>
+        current
+          .filter((p) => p.orgId !== id)
+          .map((p) => ({ ...p, members: p.members.map((m) => (m.userId === id ? { ...m, userId: null, name: null } : m)) }))
+      );
+      setVerifications((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setConsents((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
+    await handleSignOut();
+  };
+
+  const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
+
+  // Every talent profile with a display name. Profiles loaded from the database for
+  // SMMEs don't carry a name, so it comes from the projects that student posted.
+  const ownerNames = new Map(
+    prototypes.filter((p) => p.ownerId && p.ownerName).map((p) => [p.ownerId, p.ownerName])
+  );
+  const talentDirectory = talentProfiles.map((profile) =>
+    profile.name ? profile : { ...profile, name: ownerNames.get(profile.userId) || "Student" }
+  );
+  const viewedProfile = viewProfileUserId
+    ? {
+        userId: viewProfileUserId,
+        profile: talentDirectory.find((p) => p.userId === viewProfileUserId) || null,
+        projects: prototypes.filter((p) => p.ownerId === viewProfileUserId && p.showcased !== false),
+      }
+    : null;
+  if (viewedProfile) {
+    viewedProfile.name = viewedProfile.profile?.name || ownerNames.get(viewProfileUserId) || "Student";
+  }
+  const openStudentProfile = (userId) => {
+    setOpenProjectId(null);
+    setViewProfileUserId(userId);
+  };
+  const openProjectFromProfile = (projectId) => {
+    setViewProfileUserId(null);
+    setOpenProjectId(projectId);
+  };
+  const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
+  // SMMEs/NGOs only ever see the projects students chose to show.
+  const youthPostedProjects = prototypes.filter(
+    (proto) =>
+      proto.ownerRole === "Youth Pod Talent" && proto.showcased !== false && canSeeStudentWork(proto.ownerId)
+  );
+  // Filter options come from what students actually posted. Matching ignores case,
+  // so "react" and "React" count as the same skill.
+  const skillOptions = countOptions(youthPostedProjects.flatMap((proto) => proto.stack));
+  const categoryCounts = youthPostedProjects.reduce((counts, p) => {
+    const id = p.category || "other";
+    counts[id] = (counts[id] || 0) + 1;
+    return counts;
+  }, {});
+  const categoryOptions = CATEGORIES.filter((c) => categoryCounts[c.id]);
+  // A filter whose last project was deleted quietly falls back to "All".
+  const activeSkill = skillOptions.some((o) => o.key === discoverSkill) ? discoverSkill : "";
+  const activeCategory = categoryCounts[discoverCategory] ? discoverCategory : "";
+  const hasDiscoverFilters = Boolean(activeSkill || activeCategory || discoverQuery.trim());
+  const discoveredProjects = youthPostedProjects.filter(
+    (proto) =>
+      (!activeSkill || proto.stack.some((tech) => tech.toLowerCase() === activeSkill)) &&
+      (!activeCategory || (proto.category || "other") === activeCategory) &&
+      Boolean(matchProject(proto, discoverQuery))
+  );
+  // Requests this student has received, newest first; "new" ones count as unread.
+  const myContactRequests = contactRequests.filter(
+    (request) => isYouth && user?.id && request.studentId === user.id
+  );
+  const unreadRequestCount = myContactRequests.filter((request) => request.status === "new").length;
+
+  const clearDiscoverFilters = () => {
+    setDiscoverQuery("");
+    setDiscoverSkill("");
+    setDiscoverCategory("");
+  };
+  const talentRoleFor = (ownerId) =>
+    talentProfiles.find((profile) => profile.userId === ownerId)
+      ?.role;
+
+  const projectForm = (
+    <form
+      id="project-form"
+      onSubmit={handleIngestPrototype}
+      className={`scroll-mt-24 space-y-4 rounded-2xl border bg-white p-6 lg:col-span-5 ${
+        editingProjectId ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]" : "border-[#E6DFD5]"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        {editingProjectId ? (
+          <Pencil className="h-5 w-5 text-[#5E7A5E]" />
+        ) : (
+          <Layers className="h-5 w-5 text-[#5E7A5E]" />
+        )}
+        <h2 className="text-lg font-bold text-[#2C1A10]">
+          {editingProjectId ? "Edit project" : "Post a project"}
+        </h2>
+      </div>
+      <p className="text-xs text-[#6E5A4F]">
+        {editingProjectId
+          ? "Change any detail below and save. Clearing a field removes it from the project."
+          : "Share something you built. SMMEs, NGOs and sponsors can discover it; other students and developers cannot see it."}
+      </p>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project name</label>
+        <input
+          type="text"
+          required
+          value={newRepoTitle}
+          onChange={(e) => setNewRepoTitle(e.target.value)}
+          placeholder="e.g., Imbewu Learn"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label htmlFor="project-github" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[#3B2314]">
+          <Github className="h-3.5 w-3.5" />
+          GitHub repository
+        </label>
+        <input
+          id="project-github"
+          type="url"
+          inputMode="url"
+          value={newRepoUrl}
+          onChange={(e) => setNewRepoUrl(e.target.value)}
+          placeholder="https://github.com/your-name/your-repo"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+        <p className="mt-1 text-[11px] text-[#8A786D]">
+          SMMEs can open it, and Geek Archive's AI reads it to explain your project to them.
+        </p>
+      </div>
+      <div>
+        <label htmlFor="project-category" className="mb-1 block text-xs font-semibold text-[#3B2314]">Category</label>
+        <select
+          id="project-category"
+          value={newRepoCategory}
+          onChange={(e) => setNewRepoCategory(e.target.value)}
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        >
+          <option value="">Choose for me from the description</option>
+          {CATEGORIES.map((c) => (
+            <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>
+          ))}
+        </select>
+        <p className="mt-1 text-[11px] text-[#8A786D]">Organisations browse by category, e.g. Cybersecurity or Finance.</p>
+      </div>
+      <div>
+        <label htmlFor="project-video" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[#3B2314]">
+          <PlayCircle className="h-3.5 w-3.5" />
+          Demo video <span className="font-normal text-[#8A786D]">(optional)</span>
+        </label>
+        <input
+          id="project-video"
+          type="url"
+          inputMode="url"
+          value={newRepoVideo}
+          onChange={(e) => setNewRepoVideo(e.target.value)}
+          placeholder="https://youtu.be/…"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+        <p className="mt-1 text-[11px] text-[#8A786D]">{SUPPORTED_VIDEO_HINT}. Plays inside Geek Archive.</p>
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">
+          Project description
+        </label>
+        <textarea
+          rows={4}
+          value={newRepoDescription}
+          onChange={(e) => setNewRepoDescription(e.target.value)}
+          placeholder="What does it do, and who is it for?"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3.5 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Tech Stack</label>
+        <input
+          type="text"
+          value={newRepoStack}
+          onChange={(e) => setNewRepoStack(e.target.value)}
+          placeholder="Separate tools with commas"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Target Sector</label>
+        <input
+          type="text"
+          value={auditNote}
+          onChange={(e) => setAuditNote(e.target.value)}
+          placeholder="Add when known"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      {projectError && (
+        <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+          {projectError}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={projectSaving}
+          className="flex-1 rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+        >
+          {projectSaving ? "Saving…" : editingProjectId ? "Save changes" : "Post my project"}
+        </button>
+        {editingProjectId && (
+          <button
+            type="button"
+            onClick={clearProjectForm}
+            disabled={projectSaving}
+            className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+    </form>
+  );
+
   if (showAuthLanding) {
     return (
-      <div className="relative min-h-screen w-full overflow-hidden text-white flex flex-col justify-between">
+      <div id="top" className="relative flex min-h-screen w-full flex-col justify-between overflow-x-hidden bg-gradient-to-b from-[#10291D] via-[#163126] to-[#10291D] text-white">
         <InteractiveAuthBackdrop />
 
         <header className="relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
@@ -508,6 +1998,8 @@ export default function GeekArchiveApp() {
 
         <main className="relative z-10 mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-6 py-10 lg:grid-cols-12">
           <div className="space-y-6 lg:col-span-7">
+            <EventBadge />
+            <br />
             <span className="inline-flex items-center gap-2 rounded-full border border-[#C8DD9F]/25 bg-[#C8DD9F]/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-[#E3ECCF]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#C8DD9F]" />
               <span>Ideas become jobs. Builds become proof.</span>
@@ -577,6 +2069,23 @@ export default function GeekArchiveApp() {
                 Choose how you want to join pods, archive prototypes, or post an SMME/NGO brief.
               </p>
 
+              {!isSupabaseConfigured && (
+                <p className="mt-3 rounded-lg border border-[#E8D9B5] bg-[#FBF5E6] px-3 py-2 text-[11px] leading-relaxed text-[#6B5320]">
+                  <strong>Demo mode:</strong> accounts and passwords are not checked and nothing is saved.
+                  Add Supabase keys to <code>.env.local</code> to turn on real sign-in.
+                </p>
+              )}
+              {authError && (
+                <p role="alert" className="mt-3 rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                  {authError}
+                </p>
+              )}
+              {authNotice && (
+                <p role="status" className="mt-3 rounded-lg border border-[#C8DEC8] bg-[#EEF4EE] px-3 py-2 text-xs text-[#263B26]">
+                  {authNotice}
+                </p>
+              )}
+
               <div className="mt-4">
                 <label className="block text-xs font-semibold text-[#3B2314] mb-1.5">
                   I am joining as
@@ -603,6 +2112,7 @@ export default function GeekArchiveApp() {
                 <button
                   type="button"
                   onClick={() => handleAuthSubmit(null, "Google")}
+                  disabled={authLoading}
                   className="flex items-center justify-center gap-2 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2.5 text-xs font-semibold text-[#2C1A10] transition hover:bg-[#FAF8F5]"
                 >
                   <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#3B2314] text-[10px] font-bold text-white">
@@ -614,6 +2124,7 @@ export default function GeekArchiveApp() {
                 <button
                   type="button"
                   onClick={() => handleAuthSubmit(null, "GitHub")}
+                  disabled={authLoading}
                   className="flex items-center justify-center gap-2 rounded-xl border border-[#3B2314] bg-[#3B2314] px-3.5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#2C1A10]"
                 >
                   <GitBranch className="h-4 w-4 text-[#A8C6A8]" />
@@ -650,17 +2161,61 @@ export default function GeekArchiveApp() {
                   <input
                     type="password"
                     required
+                    minLength={supabase ? 8 : 6}
+                    autoComplete={authMode === "signin" ? "current-password" : "new-password"}
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
                     placeholder="••••••••"
                     className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm text-[#2C1A10] focus:border-[#5E7A5E] focus:outline-none"
                   />
                 </div>
+                {supabase && authMode === "signin" && (
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={authLoading}
+                    className="text-xs font-semibold text-[#3F5D3F] hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+                {authMode === "signup" ? (
+                  <label className="flex items-start gap-2 text-xs text-[#3B2314]">
+                    <input
+                      type="checkbox"
+                      checked={signupConsent}
+                      onChange={(e) => setSignupConsent(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 accent-[#5E7A5E]"
+                    />
+                    <span>
+                      I agree to the{" "}
+                      <button type="button" onClick={() => setShowNotice(true)} className="font-semibold text-[#3F5D3F] underline">
+                        privacy notice
+                      </button>{" "}
+                      (POPIA).
+                    </span>
+                  </label>
+                ) : (
+                  <p className="text-[11px] text-[#6E5A4F]">
+                    By continuing you agree to our{" "}
+                    <button type="button" onClick={() => setShowNotice(true)} className="font-semibold text-[#3F5D3F] underline">
+                      privacy notice
+                    </button>
+                    .
+                  </p>
+                )}
                 <button
                   type="submit"
-                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-[#587561] px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(88,117,97,0.18)] transition hover:bg-[#46634F]"
+                  disabled={authLoading}
+                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-[#587561] px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(88,117,97,0.18)] transition hover:bg-[#46634F] disabled:cursor-wait disabled:opacity-70"
                 >
-                  <span>{authMode === "signin" ? "Sign In to Workspace" : "Create Account"}</span>
+                  <span>
+                    {authLoading
+                      ? "Please wait…"
+                      : authMode === "signin"
+                      ? "Sign In to Workspace"
+                      : "Create Account"}
+                  </span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
               </form>
@@ -668,10 +2223,19 @@ export default function GeekArchiveApp() {
           </div>
         </main>
 
+        <LandingSections />
+
         <footer className="relative z-10 mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-6 py-4 text-xs text-[#DFD7CE]">
           <span>Geek Archive • Embedded Intelligence</span>
+          <button type="button" onClick={() => setShowNotice(true)} className="inline-flex items-center gap-1 underline-offset-2 hover:underline">
+            <Lock className="h-3 w-3" />
+            Privacy notice (POPIA)
+          </button>
           <span>Move your cursor to interact with the pod network</span>
         </footer>
+        <Modal open={showNotice} onClose={() => setShowNotice(false)} title="Privacy notice" subtitle="How Geek Archive handles your information" size="lg">
+          <PrivacyNotice />
+        </Modal>
       </div>
     );
   }
@@ -679,50 +2243,75 @@ export default function GeekArchiveApp() {
   return (
     <div className="min-h-screen bg-[#F4F7F1] text-[#163126]">
       <header className="sticky top-0 z-20 border-b border-[#DDE4D8] bg-[#F4F7F1]/95 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#163126] text-[#C8DD9F]">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#163126] text-[#C8DD9F]">
               <span className="text-xs font-black">GA</span>
             </div>
-            <div>
-              <span className="text-lg font-bold tracking-tight text-[#163126]">Geek Archive</span>
-              <span className="ml-2 hidden text-[10px] font-bold uppercase tracking-[0.14em] text-[#708078] sm:inline">
+            <div className="min-w-0 leading-tight">
+              <span className="block truncate text-lg font-bold tracking-tight text-[#163126]">Geek Archive</span>
+              <span className="hidden text-[10px] font-bold uppercase tracking-[0.14em] text-[#708078] xl:block">
                 Embedded Intelligence
               </span>
             </div>
           </div>
 
-          <nav className="flex flex-wrap items-center gap-1.5">
+          {/* Desktop navigation: one row, never wraps */}
+          <nav aria-label="Main" className="hidden items-center gap-1 lg:flex">
             {navTabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                aria-current={activeTab === tab.id ? "page" : undefined}
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition ${
                   activeTab === tab.id
                     ? "bg-[#163126] text-[#C8DD9F]"
                     : "text-[#68766F] hover:bg-[#E8EEE5] hover:text-[#163126]"
                 }`}
               >
                 {tab.label}
+                <TabBadge count={tab.id === "messages" ? unreadRequestCount : 0} />
               </button>
             ))}
           </nav>
 
-          <div className="flex items-center gap-2">
+          {/* Desktop account area */}
+          <div className="hidden shrink-0 items-center gap-2 lg:flex">
             {user ? (
               <>
-                <div className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-3 py-1.5 text-xs">
-                  <span className="font-semibold text-[#2C1A10]">{user.name}</span>
-                  <span className="ml-1.5 text-[#5E7A5E] font-medium">• {user.role}</span>
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-[#C8DD9F] text-[11px] font-bold text-[#163126]"
+                  >
+                    {initialsOf(user.name)}
+                  </span>
+                  <div className="max-w-[150px] leading-tight">
+                    <p className="flex items-center gap-1 truncate text-xs font-semibold text-[#2C1A10]">
+                      <span className="truncate">{user.name}</span>
+                      {isVerified && <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-[#2F7A3A]" aria-label="Verified" />}
+                    </p>
+                    <p className="truncate text-[11px] font-medium text-[#5E7A5E]">{user.role}</p>
+                  </div>
                 </div>
                 <button
                   type="button"
-                  onClick={handleSignOut}
-                  className="inline-flex items-center gap-1 rounded-xl border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  onClick={() => setShowPrivacy(true)}
+                  aria-label="Privacy & my data"
+                  title="Privacy & my data"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#D8CFC4] bg-white text-[#3B2314] hover:bg-[#FAF8F5]"
                 >
-                  <LogOut className="h-3.5 w-3.5" />
-                  <span>Sign Out</span>
+                  <Lock className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  aria-label="Sign Out"
+                  title="Sign out"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#D8CFC4] bg-white text-[#3B2314] hover:bg-[#FAF8F5]"
+                >
+                  <LogOut className="h-4 w-4" />
                 </button>
               </>
             ) : (
@@ -736,10 +2325,161 @@ export default function GeekArchiveApp() {
               </button>
             )}
           </div>
+
+          {/* Mobile / tablet menu button */}
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-menu"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#D8CFC4] bg-white text-[#163126] hover:bg-[#FAF8F5] lg:hidden"
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
         </div>
+
+        {/* Mobile / tablet menu panel */}
+        {mobileMenuOpen && (
+          <div id="mobile-menu" className="border-t border-[#DDE4D8] bg-[#F4F7F1] lg:hidden">
+            <nav aria-label="Main" className="mx-auto flex max-w-6xl flex-col gap-1 px-4 py-3 sm:px-6">
+              {navTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    setMobileMenuOpen(false);
+                  }}
+                  aria-current={activeTab === tab.id ? "page" : undefined}
+                  className={`flex w-full items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold transition ${
+                    activeTab === tab.id
+                      ? "bg-[#163126] text-[#C8DD9F]"
+                      : "text-[#3E4F46] hover:bg-[#E8EEE5]"
+                  }`}
+                >
+                  {tab.label}
+                  <TabBadge count={tab.id === "messages" ? unreadRequestCount : 0} />
+                </button>
+              ))}
+            </nav>
+            <div className="mx-auto max-w-6xl border-t border-[#DDE4D8] px-4 py-3 sm:px-6">
+              {user ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#C8DD9F] text-xs font-bold text-[#163126]"
+                    >
+                      {initialsOf(user.name)}
+                    </span>
+                    <div className="min-w-0 leading-tight">
+                      <p className="flex items-center gap-1 truncate text-sm font-semibold text-[#2C1A10]">
+                        <span className="truncate">{user.name}</span>
+                        {isVerified && <BadgeCheck className="h-4 w-4 shrink-0 text-[#2F7A3A]" aria-label="Verified" />}
+                      </p>
+                      <p className="truncate text-xs font-medium text-[#5E7A5E]">{user.role}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setShowPrivacy(true);
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    <Lock className="h-3.5 w-3.5" />
+                    <span>Privacy</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleSignOut();
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setShowAuthLanding(true);
+                  }}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2.5 text-sm font-semibold text-white"
+                >
+                  <LogIn className="h-4 w-4" />
+                  <span>Sign In / Up</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
+        {user && !isVerified && (
+          <div
+            role="status"
+            className={`mb-5 flex flex-col gap-3 rounded-2xl border px-5 py-4 sm:flex-row sm:items-center sm:justify-between ${
+              myVerification?.status === "pending"
+                ? "border-[#E8D9B5] bg-[#FBF5E6]"
+                : myVerification?.status === "rejected"
+                ? "border-[#E7C3BC] bg-[#FBEDEA]"
+                : "border-[#C8DD9F] bg-[#F4F9EC]"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#3F5D3F]" />
+              <div>
+                <p className="text-sm font-bold text-[#163126]">
+                  {myVerification?.status === "pending"
+                    ? "Your verification is being reviewed"
+                    : myVerification?.status === "rejected"
+                    ? "Your verification wasn't approved"
+                    : "Verify your account"}
+                </p>
+                <p className="text-xs text-[#3E4F46]">
+                  {myVerification?.status === "pending"
+                    ? "You can set things up meanwhile; full access opens once you're approved."
+                    : isYouth
+                    ? "Verified students and developers can post projects that organisations can discover."
+                    : "Verified organisations can discover student projects, view profiles and contact students."}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowVerify(true)}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2 text-sm font-semibold text-[#C8DD9F]"
+            >
+              <BadgeCheck className="h-4 w-4" />
+              {myVerification?.status === "pending" ? "View request" : myVerification?.status === "rejected" ? "Update details" : "Verify now"}
+            </button>
+          </div>
+        )}
+
+        {activeTab === "verifications" && isAdmin && (
+          <AdminVerifications requests={adminRequestList} onReview={handleReviewVerification} />
+        )}
+
+        {(projectsLoading || projectsLoadError) && (
+          <p
+            role={projectsLoadError ? "alert" : "status"}
+            className={`mb-4 rounded-xl border px-4 py-2.5 text-xs ${
+              projectsLoadError
+                ? "border-[#E7C3BC] bg-[#FBEDEA] text-[#8A2C1E]"
+                : "border-[#DDE4D8] bg-white text-[#5C493E]"
+            }`}
+          >
+            {projectsLoadError || "Loading projects…"}
+          </p>
+        )}
         <section className="relative mb-8 overflow-hidden rounded-[28px] bg-[#163126] p-6 text-white shadow-[0_18px_50px_rgba(22,49,38,0.10)] sm:p-8">
           <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full border border-[#C8DD9F]/15" />
           <div className="pointer-events-none absolute -right-6 -top-10 h-36 w-36 rounded-full bg-[#C8DD9F]/[0.07]" />
@@ -761,6 +2501,25 @@ export default function GeekArchiveApp() {
                   </>
                 )}
               </h1>
+              <dl className="flex flex-wrap gap-2 pt-1" aria-label="Your Geek Archive at a glance">
+                {(isYouth
+                  ? [
+                      ["Projects shown", myProjects.filter((p) => p.showcased !== false).length],
+                      ["Active pods", myActivePods.length],
+                      ["Credentials", myCredentials.length],
+                    ]
+                  : [
+                      ["Verified projects", youthPostedProjects.length],
+                      ["Categories", categoryOptions.length],
+                      ["Your pods", orgPods.length],
+                    ]
+                ).map(([label, value]) => (
+                  <div key={label} className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-[#E7EEE2]">
+                    <dt className="inline">{label}: </dt>
+                    <dd className="inline font-bold text-[#C8DD9F]">{value}</dd>
+                  </div>
+                ))}
+              </dl>
               <p className="max-w-xl text-sm leading-relaxed text-[#D5DED2]">
                 {isYouth
                   ? "Create your talent profile, join a project pod, and turn shipped work into career proof."
@@ -787,44 +2546,27 @@ export default function GeekArchiveApp() {
         {activeTab === "opportunities" && isYouth && (
           <section className="rounded-2xl border border-[#E6DFD5] bg-white p-6">
             <div className="mb-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">
-                Youth dashboard
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
               <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">Matched opportunities</h2>
-              <p className="mt-1 text-sm text-[#6E5A4F]">
-                Only projects matched to your profile appear here.
-              </p>
+              <p className="mt-1 text-sm text-[#6E5A4F]">Organisations that requested a pod with you in it.</p>
             </div>
-            {youthMatchedOpportunity ? (
-              <article className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
-                <h3 className="font-bold text-[#2C1A10]">{youthMatchedOpportunity.title}</h3>
-                {youthMatchedOpportunity.summary && (
-                  <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">
-                    {youthMatchedOpportunity.summary}
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-[#6E5A4F]">
-                  Your pod role: {youthMatchedMember.role}
-                </p>
-                <p className="mt-3 text-sm text-[#3B2314]">{youthMatchedMember.task}</p>
-                {youthMatchedOpportunity.stack.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {youthMatchedOpportunity.stack.map((tech) => (
-                      <span
-                        key={tech}
-                        className="rounded-md bg-[#EEF4EE] px-2.5 py-1 text-xs font-medium text-[#3F5D3F]"
-                      >
-                        {tech}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </article>
+            {myActivePods.length ? (
+              <div className="space-y-3">
+                {myActivePods.map((pod) => (
+                  <article key={pod.id} aria-label={`Opportunity: ${pod.projectTitle} for ${pod.orgName}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
+                    <p className="text-xs font-semibold text-[#5E7A5E]">{pod.orgName}</p>
+                    <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                    {pod.need && <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">“{pod.need}”</p>}
+                    <p className="mt-3 text-xs text-[#6E5A4F]">Your pod role: <strong>{myRoleIn(pod)?.role}</strong></p>
+                    <p className="mt-1 text-sm text-[#3B2314]">{myRoleIn(pod)?.task}</p>
+                  </article>
+                ))}
+              </div>
             ) : (
               <div className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-7 text-center">
                 <p className="font-semibold text-[#2C1A10]">No matched opportunities yet</p>
                 <p className="mt-1 text-sm text-[#6E5A4F]">
-                  Keep your profile current. Projects matched to you will appear here.
+                  Keep your profile and projects up to date. When an organisation requests a pod with you, it appears here.
                 </p>
               </div>
             )}
@@ -911,11 +2653,9 @@ export default function GeekArchiveApp() {
                       {matchedResult.prototype.summary}
                     </p>
                   )}
-                  {matchedResult.prototype.repo && (
-                    <p className="mt-1 text-xs text-[#6E5A4F]">
-                      Project link: {matchedResult.prototype.repo}
-                    </p>
-                  )}
+                  <div className="mt-3">
+                    <ProjectLinks project={matchedResult.prototype} compact />
+                  </div>
                   {matchedResult.prototype.description && (
                     <details className="mt-3">
                       <summary className="cursor-pointer text-xs font-semibold text-[#3F5D3F]">
@@ -964,15 +2704,25 @@ export default function GeekArchiveApp() {
                       {member.profile && (
                         <div className="mt-2 space-y-1 text-[11px] text-[#6E5A4F]">
                           <p>Skills: {member.profile.skills.join(", ")}</p>
-                          <a
-                            href={member.profile.portfolio}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
-                          >
-                            <Link2 className="h-3 w-3" />
-                            View matched portfolio
-                          </a>
+                          <div className="flex flex-wrap gap-x-3 gap-y-1">
+                            <button
+                              type="button"
+                              onClick={() => openStudentProfile(member.profile.userId)}
+                              className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                            >
+                              <UserRound className="h-3 w-3" />
+                              View profile
+                            </button>
+                            <a
+                              href={member.profile.portfolio}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                            >
+                              <Link2 className="h-3 w-3" />
+                              Portfolio
+                            </a>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -984,85 +2734,680 @@ export default function GeekArchiveApp() {
                   </div>
                 ))}
               </div>
+              {matchedResult.prototype && (
+                <div className="rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-4">
+                  <p className="text-sm font-semibold text-[#163126]">Ready to start?</p>
+                  <p className="mt-0.5 text-xs text-[#3E4F46]">
+                    Requesting the pod assigns verified students to {matchedResult.prototype.title} and tells them about your need.
+                  </p>
+                  {isVerified ? (
+                    <button
+                      type="button"
+                      onClick={handleRequestPod}
+                      disabled={podRequest.status === "loading"}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2 text-sm font-semibold text-[#C8DD9F] disabled:opacity-70"
+                    >
+                      <Users className="h-4 w-4" />
+                      {podRequest.status === "loading" ? "Requesting…" : "Request this pod"}
+                    </button>
+                  ) : (
+                    <p className="mt-2 text-xs font-semibold text-[#6B5320]">Verify your organisation to request pods.</p>
+                  )}
+                  {podRequest.status === "error" && (
+                    <p role="alert" className="mt-2 text-xs text-[#8A2C1E]">{podRequest.message}</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {activeTab === "archive" && !isYouth && (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            <form
-              onSubmit={handleIngestPrototype}
-              className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5"
-            >
-              <div className="flex items-center gap-2">
-                <Layers className="h-5 w-5 text-[#5E7A5E]" />
-                <h2 className="text-lg font-bold text-[#2C1A10]">Add a project</h2>
-              </div>
-              <p className="text-xs text-[#6E5A4F]">
-                Add a project name first. To update an existing project, enter its name again with a description, link, stack, or sector.
-              </p>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project name</label>
-                <input
-                  type="text"
-                  required
-                  value={newRepoTitle}
-                  onChange={(e) => setNewRepoTitle(e.target.value)}
-                  placeholder="e.g., Imbewu Learn"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project or repository link</label>
-                <input
-                  type="text"
-                  value={newRepoUrl}
-                  onChange={(e) => setNewRepoUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">
-                  Project description
-                </label>
-                <textarea
-                  rows={4}
-                  value={newRepoDescription}
-                  onChange={(e) => setNewRepoDescription(e.target.value)}
-                  placeholder="What does it do, and who is it for?"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3.5 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Tech Stack</label>
-                <input
-                  type="text"
-                  value={newRepoStack}
-                  onChange={(e) => setNewRepoStack(e.target.value)}
-                  placeholder="Separate tools with commas"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Target Sector</label>
-                <input
-                  type="text"
-                  value={auditNote}
-                  onChange={(e) => setAuditNote(e.target.value)}
-                  placeholder="Add when known"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <button
-                type="submit"
-                className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
-              >
-                Add project to archive
-              </button>
-            </form>
+        {activeTab === "discover" && !isYouth && !isVerified && (
+          <VerifyGate
+            title="Verify your organisation to discover student projects"
+            text="To protect students, only verified SMMEs, NGOs and sponsors can see their projects and profiles, contact them, or run AI analyses."
+            status={myVerification?.status}
+            onVerify={() => setShowVerify(true)}
+          />
+        )}
 
-            <div className="space-y-4 lg:col-span-7">
+        {activeTab === "discover" && !isYouth && isVerified && youthPostedProjects.length > 0 && (
+          <div className="mb-4">
+            <AiRecommendPanel
+              projects={youthPostedProjects}
+              orgType={orgType}
+              defaultNeed={problemBrief}
+              onOpenProject={(id) => setOpenProjectId(id)}
+            />
+          </div>
+        )}
+
+        {activeTab === "discover" && !isYouth && isVerified && (
+          <section className="space-y-4">
+            <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-[#2C1A10]">Discover projects by students &amp; developers</h2>
+                  <p className="mt-1 text-xs text-[#6E5A4F]">
+                    Projects posted by youth talent. Only SMMEs, NGOs and sponsors can see this list.
+                  </p>
+                </div>
+                <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
+                  {youthPostedProjects.length} posted
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] sm:items-end">
+                <div>
+                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Search</span>
+                  <SearchSuggest
+                    value={discoverQuery}
+                    onChange={setDiscoverQuery}
+                    projects={youthPostedProjects}
+                    onPick={(project) => setOpenProjectId(project.id)}
+                    placeholder="Start typing: a project, category, skill or person"
+                  />
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Skill</span>
+                  <select
+                    value={activeSkill}
+                    onChange={(e) => setDiscoverSkill(e.target.value)}
+                    disabled={!skillOptions.length}
+                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2.5 text-sm disabled:opacity-60"
+                  >
+                    <option value="">All skills</option>
+                    {skillOptions.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label} ({option.count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={clearDiscoverFilters}
+                  disabled={!hasDiscoverFilters}
+                  className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Clear filters
+                </button>
+              </div>
+              {categoryOptions.length > 0 && (
+                <div role="group" aria-label="Categories" className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    aria-pressed={!activeCategory}
+                    onClick={() => setDiscoverCategory("")}
+                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                      !activeCategory ? "bg-[#163126] text-[#C8DD9F]" : "bg-[#F4F7F1] text-[#3E4F46] hover:bg-[#E8EEE5]"
+                    }`}
+                  >
+                    All ({youthPostedProjects.length})
+                  </button>
+                  {categoryOptions.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      aria-pressed={activeCategory === c.id}
+                      onClick={() => setDiscoverCategory(activeCategory === c.id ? "" : c.id)}
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                        activeCategory === c.id ? "bg-[#163126] text-[#C8DD9F]" : "bg-[#F4F7F1] text-[#3E4F46] hover:bg-[#E8EEE5]"
+                      }`}
+                    >
+                      <span aria-hidden="true">{c.emoji}</span> {c.label} ({categoryCounts[c.id]})
+                    </button>
+                  ))}
+                </div>
+              )}
+              {youthPostedProjects.length > 0 && (
+                <p className="mt-3 text-xs text-[#6E5A4F]" aria-live="polite">
+                  Showing {discoveredProjects.length} of {youthPostedProjects.length} projects
+                </p>
+              )}
+            </div>
+
+            {discoveredProjects.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                <p className="font-semibold text-[#2C1A10]">
+                  {youthPostedProjects.length ? "No projects match your filters" : "No student projects posted yet"}
+                </p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">
+                  {youthPostedProjects.length
+                    ? "Try a different category, skill or search."
+                    : "When students and developers post their work, it will appear here."}
+                </p>
+                {youthPostedProjects.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearDiscoverFilters}
+                    className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline"
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {discoveredProjects.map((proto) => (
+                  <article key={proto.id} className="flex flex-col rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                    <VideoPreview project={proto} onOpen={() => setOpenProjectId(proto.id)} />
+                    {(proto.category || proto.domain) && (
+                      <span className="text-xs font-semibold text-[#5E7A5E]">
+                        {CATEGORY_BY_ID[proto.category]?.emoji} {categoryLabel(proto.category) || proto.domain}
+                      </span>
+                    )}
+                    <h3 className="text-base font-bold text-[#2C1A10]">
+                      <button
+                        type="button"
+                        onClick={() => setOpenProjectId(proto.id)}
+                        className="text-left hover:text-[#3F5D3F] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8DD9F]"
+                      >
+                        {proto.title}
+                      </button>
+                    </h3>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-[#6E5A4F]">
+                      <Users className="h-3.5 w-3.5" />
+                      Posted by <span className="font-semibold text-[#3B2314]">{proto.ownerName}</span>
+                      {talentRoleFor(proto.ownerId) && <span>· {talentRoleFor(proto.ownerId)}</span>}
+                      {proto.postedAt && (
+                        <span>· {new Date(proto.postedAt).toLocaleDateString()}</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openStudentProfile(proto.ownerId)}
+                        aria-label={`View ${proto.ownerName || "student"}'s profile`}
+                        className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#EEF4EE] px-2 py-0.5 font-semibold text-[#2F472F] hover:bg-[#DDEBD8]"
+                      >
+                        <UserRound className="h-3 w-3" />
+                        View profile
+                      </button>
+                    </p>
+                    {proto.summary && (
+                      <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
+                    )}
+                    {proto.description && proto.description !== proto.summary && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs font-semibold text-[#3F5D3F]">
+                          Read full description
+                        </summary>
+                        <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.description}</p>
+                      </details>
+                    )}
+                    {proto.stack.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {proto.stack.map((tech) => {
+                          const selected = activeSkill === tech.toLowerCase();
+                          return (
+                            <button
+                              key={tech}
+                              type="button"
+                              onClick={() => setDiscoverSkill(selected ? "" : tech.toLowerCase())}
+                              aria-pressed={selected}
+                              title={selected ? "Show all skills" : `Show only ${tech} projects`}
+                              className={`rounded-md px-2.5 py-0.5 text-xs font-medium transition ${
+                                selected
+                                  ? "bg-[#163126] text-[#C8DD9F]"
+                                  : "bg-[#EEF4EE] text-[#3F5D3F] hover:bg-[#DDEBD8]"
+                              }`}
+                            >
+                              {tech}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="mt-4">
+                      <ProjectLinks project={proto} onOpen={() => setOpenProjectId(proto.id)} />
+                    </div>
+
+                    <div className="mt-4 border-t border-[#EEE8E1] pt-4">
+                      {(() => {
+                        const sent = sentRequestFor(proto.id);
+                        if (sent) {
+                          const statusText = {
+                            new: "Message sent · waiting for the student to reply",
+                            interested: `${proto.ownerName || "The student"} is interested and will contact you at ${sent.replyEmail}`,
+                            declined: `${proto.ownerName || "The student"} isn't available for this right now`,
+                          }[sent.status];
+                          return (
+                            <p
+                              role="status"
+                              className={`inline-flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ${
+                                sent.status === "interested"
+                                  ? "bg-[#EEF4EE] text-[#2F472F]"
+                                  : sent.status === "declined"
+                                  ? "bg-[#F5F1EC] text-[#6E5A4F]"
+                                  : "bg-[#FBF5E6] text-[#6B5320]"
+                              }`}
+                            >
+                              {sent.status === "interested" ? (
+                                <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
+                              ) : (
+                                <Mail className="mt-px h-3.5 w-3.5 shrink-0" />
+                              )}
+                              <span>{statusText}</span>
+                            </p>
+                          );
+                        }
+                        if (contactFormProjectId !== proto.id) {
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => openContactForm(proto)}
+                              aria-label={`Contact ${proto.ownerName || "the student"} about ${proto.title}`}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
+                            >
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              Contact student
+                            </button>
+                          );
+                        }
+                        return (
+                          <form
+                            onSubmit={(e) => handleSendContactRequest(e, proto)}
+                            aria-label={`Message to ${proto.ownerName || "the student"}`}
+                            className="space-y-3"
+                          >
+                            <p className="text-xs text-[#6E5A4F]">
+                              Your message and contact details go to {proto.ownerName || "the student"} only. Their
+                              own contact details stay private until they reply.
+                            </p>
+                            <label className="block">
+                              <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Message</span>
+                              <textarea
+                                rows={4}
+                                required
+                                minLength={CONTACT_MESSAGE_MIN}
+                                maxLength={CONTACT_MESSAGE_MAX}
+                                value={contactDraft.message}
+                                onChange={(e) => setContactDraft((d) => ({ ...d, message: e.target.value }))}
+                                className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3 text-sm"
+                              />
+                            </label>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Your email</span>
+                                <input
+                                  type="email"
+                                  required
+                                  value={contactDraft.email}
+                                  onChange={(e) => setContactDraft((d) => ({ ...d, email: e.target.value }))}
+                                  placeholder="you@business.co.za"
+                                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-semibold text-[#3B2314]">
+                                  Phone <span className="font-normal text-[#8A786D]">(optional)</span>
+                                </span>
+                                <input
+                                  type="tel"
+                                  value={contactDraft.phone}
+                                  onChange={(e) => setContactDraft((d) => ({ ...d, phone: e.target.value }))}
+                                  placeholder="e.g. 071 234 5678"
+                                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
+                                />
+                              </label>
+                            </div>
+                            {contactError && (
+                              <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                                {contactError}
+                              </p>
+                            )}
+                            <div className="flex gap-2">
+                              <button
+                                type="submit"
+                                disabled={contactSending}
+                                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#5E7A5E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+                              >
+                                <Send className="h-3.5 w-3.5" />
+                                {contactSending ? "Sending…" : "Send message"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={closeContactForm}
+                                disabled={contactSending}
+                                className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </form>
+                        );
+                      })()}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "messages" && isYouth && (
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
+              <div>
+                <h2 className="text-lg font-bold text-[#2C1A10]">Messages</h2>
+                <p className="mt-1 text-xs text-[#6E5A4F]">
+                  SMMEs, NGOs and sponsors who want to talk about your projects. Your own contact details
+                  stay private until you reply.
+                </p>
+              </div>
+              <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
+                {unreadRequestCount ? `${unreadRequestCount} new` : `${myContactRequests.length} total`}
+              </span>
+            </div>
+
+            {messagesError && (
+              <p role="alert" className="rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-4 py-2.5 text-xs text-[#8A2C1E]">
+                {messagesError}
+              </p>
+            )}
+
+            {myContactRequests.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                <Inbox className="mx-auto h-6 w-6 text-[#8FA58F]" />
+                <p className="mt-2 font-semibold text-[#2C1A10]">No messages yet</p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">
+                  When an organization wants to talk about one of your projects, it will show up here.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("myprojects")}
+                  className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline"
+                >
+                  Go to My projects
+                </button>
+              </div>
+            ) : (
+              myContactRequests.map((request) => (
+                <article
+                  key={request.id}
+                  aria-label={`Message from ${request.orgName} about ${request.projectTitle}`}
+                  className={`rounded-2xl border bg-white p-5 ${
+                    request.status === "new" ? "border-[#E2C88F] ring-1 ring-[#F2E3BF]" : "border-[#E6DFD5]"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-base font-bold text-[#2C1A10]">{request.orgName}</p>
+                      <p className="text-xs text-[#6E5A4F]">
+                        About <span className="font-semibold text-[#3B2314]">{request.projectTitle}</span>
+                        {request.createdAt && <> · {new Date(request.createdAt).toLocaleDateString()}</>}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        request.status === "new"
+                          ? "bg-[#FBF5E6] text-[#6B5320]"
+                          : request.status === "interested"
+                          ? "bg-[#EEF4EE] text-[#2F472F]"
+                          : "bg-[#F5F1EC] text-[#6E5A4F]"
+                      }`}
+                    >
+                      {request.status === "new"
+                        ? "New"
+                        : request.status === "interested"
+                        ? "You're interested"
+                        : "Declined"}
+                    </span>
+                  </div>
+
+                  <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-[#3B2314]">
+                    {request.message}
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[#5C493E]">
+                    <a
+                      href={`mailto:${request.replyEmail}?subject=${encodeURIComponent(`Re: ${request.projectTitle}`)}`}
+                      className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                    >
+                      <Mail className="h-3.5 w-3.5" />
+                      {request.replyEmail}
+                    </a>
+                    {request.replyPhone && (
+                      <a
+                        href={`tel:${request.replyPhone.replace(/[^\d+]/g, "")}`}
+                        className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                      >
+                        <Phone className="h-3.5 w-3.5" />
+                        {request.replyPhone}
+                      </a>
+                    )}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#EEE8E1] pt-4">
+                    {request.status === "new" ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleRespondToRequest(request, "interested")}
+                          disabled={respondingRequestId === request.id}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-[#5E7A5E] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#4C654C] disabled:opacity-70"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          I&apos;m interested
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRespondToRequest(request, "declined")}
+                          disabled={respondingRequestId === request.id}
+                          className="rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:opacity-70"
+                        >
+                          Not now
+                        </button>
+                      </>
+                    ) : request.status === "interested" ? (
+                      <>
+                        <a
+                          href={`mailto:${request.replyEmail}?subject=${encodeURIComponent(`Re: ${request.projectTitle}`)}`}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                          Reply by email
+                        </a>
+                        <p className="text-xs text-[#6E5A4F]">
+                          {request.orgName} has been told you&apos;re interested.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-xs text-[#6E5A4F]">You declined this request.</p>
+                        <button
+                          type="button"
+                          onClick={() => handleRespondToRequest(request, "interested")}
+                          disabled={respondingRequestId === request.id}
+                          className="text-xs font-semibold text-[#3F5D3F] hover:underline"
+                        >
+                          Changed your mind? Mark as interested
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </article>
+              ))
+            )}
+          </section>
+        )}
+
+        {activeTab === "myprojects" && isYouth && isVerified && (
+          <div className="mb-6">
+            <GitHubImport
+              defaultUsername={
+                myVerification?.githubUsername ||
+                (ownTalentProfile?.portfolio || "").match(/github\.com\/([A-Za-z0-9-]+)/i)?.[1] ||
+                ""
+              }
+              existingRepoUrls={new Set(myProjects.map((p) => (p.repo || "").toLowerCase()).filter(Boolean))}
+              onImport={handleImportRepos}
+            />
+          </div>
+        )}
+
+        {activeTab === "myprojects" && isYouth && (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {isVerified ? (
+              projectForm
+            ) : (
+              <VerifyGate
+                className="lg:col-span-5"
+                title="Verify your account to post projects"
+                text="Organisations only see work from verified students and developers. It takes a minute."
+                status={myVerification?.status}
+                onVerify={() => setShowVerify(true)}
+              />
+            )}
+
+            <section className="space-y-4 lg:col-span-7">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                <div>
+                  <h2 className="text-lg font-bold text-[#2C1A10]">My projects</h2>
+                  <p className="mt-1 inline-flex items-center gap-1 text-xs text-[#6E5A4F]">
+                    <ShieldCheck className="h-3.5 w-3.5 text-[#5E7A5E]" />
+                    Visible to you and to SMMEs, NGOs and sponsors only.
+                  </p>
+                </div>
+                <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
+                  {myProjects.length} posted
+                </span>
+              </div>
+
+              {myProjects.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                  <p className="font-semibold text-[#2C1A10]">You haven&apos;t posted a project yet</p>
+                  <p className="mt-1 text-sm text-[#6E5A4F]">
+                    Post something you built so organizations and sponsors can discover it.
+                  </p>
+                </div>
+              ) : (
+                myProjects.map((proto) => (
+                  <article
+                    key={proto.id}
+                    className={`rounded-2xl border bg-white p-5 ${
+                      editingProjectId === proto.id
+                        ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]"
+                        : "border-[#E6DFD5]"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        {proto.domain && (
+                          <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                        )}
+                        <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                        {editingProjectId === proto.id && (
+                          <p className="text-[11px] font-semibold text-[#5E7A5E]">Editing…</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditProject(proto)}
+                          aria-label={`Edit ${proto.title}`}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#D8CFC4] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(proto.id)}
+                          aria-label={`Delete ${proto.title}`}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#E7C3BC] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#8A2C1E] hover:bg-[#FBEDEA]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Delete</span>
+                        </button>
+                      </div>
+                    </div>
+                    {confirmDeleteId === proto.id && (
+                      <div
+                        role="alertdialog"
+                        aria-label={`Confirm deleting ${proto.title}`}
+                        className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-3.5 py-2.5"
+                      >
+                        <p className="text-xs font-medium text-[#8A2C1E]">
+                          Delete this project? Organizations will no longer see it. This can&apos;t be undone.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteProject(proto)}
+                            disabled={deletingProjectId === proto.id}
+                            className="rounded-lg bg-[#A33A2A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#8A2C1E] disabled:opacity-70"
+                          >
+                            {deletingProjectId === proto.id ? "Deleting…" : "Yes, delete"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="rounded-lg border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314]"
+                          >
+                            Keep it
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {proto.summary && (
+                      <p className="mt-1 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
+                    )}
+                    {proto.stack.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {proto.stack.map((tech) => (
+                          <span
+                            key={tech}
+                            className="rounded-md bg-[#EEF4EE] px-2.5 py-0.5 text-xs font-medium text-[#3F5D3F]"
+                          >
+                            {tech}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <span className="rounded-full bg-[#F4F9EC] px-2.5 py-0.5 text-[11px] font-semibold text-[#2F472F]">
+                        {CATEGORY_BY_ID[proto.category]?.emoji || "📁"} {categoryLabel(proto.category) || "No category"}
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={proto.showcased !== false}
+                        aria-label={`Show ${proto.title} to organisations`}
+                        onClick={() => handleToggleShowcase(proto)}
+                        className="inline-flex items-center gap-2 text-xs font-semibold text-[#3B2314]"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
+                            proto.showcased !== false ? "bg-[#5E7A5E]" : "bg-[#D8CFC4]"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 rounded-full bg-white shadow transition ${
+                              proto.showcased !== false ? "translate-x-4" : "translate-x-0.5"
+                            }`}
+                          />
+                        </span>
+                        {proto.showcased !== false ? "Shown to organisations" : "Hidden from organisations"}
+                      </button>
+                    </div>
+                    <div className="mt-3">
+                      <ProjectLinks project={proto} compact />
+                    </div>
+                    {!proto.repo && !proto.demoVideo && (
+                      <p className="mt-3 text-[11px] text-[#8A786D]">
+                        Tip: add a GitHub repo and demo video so organizations can see your work in action.
+                      </p>
+                    )}
+                  </article>
+                ))
+              )}
+            </section>
+          </div>
+        )}
+
+        {activeTab === "archive" && !isYouth && (
+            <div className="space-y-4">
               <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1093,13 +3438,26 @@ export default function GeekArchiveApp() {
                       {proto.domain && (
                         <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
                       )}
-                      <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                      <h3 className="text-base font-bold text-[#2C1A10]">
+                        <button
+                          type="button"
+                          onClick={() => setOpenProjectId(proto.id)}
+                          className="text-left hover:text-[#3F5D3F] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8DD9F]"
+                        >
+                          {proto.title}
+                        </button>
+                      </h3>
+                      {proto.ownerRole === "Youth Pod Talent" && (
+                        <p className="text-xs text-[#6E5A4F]">
+                          Posted by <span className="font-semibold">{proto.ownerName}</span> (student / developer)
+                        </p>
+                      )}
                       {proto.summary && (
                         <p className="mt-1 max-w-2xl text-sm leading-relaxed text-[#5C493E]">
                           {proto.summary}
                         </p>
                       )}
-                      {proto.repo && <p className="text-xs text-[#6E5A4F]">{proto.repo}</p>}
+
                     </div>
                     <span className="rounded-full bg-[#FAF8F5] border border-[#E6DFD5] px-3 py-1 text-xs font-bold text-[#3B2314]">
                       {proto.completion == null
@@ -1127,6 +3485,9 @@ export default function GeekArchiveApp() {
                       </span>
                     ))}
                   </div>
+                  <div className="mt-3">
+                    <ProjectLinks project={proto} compact onOpen={() => setOpenProjectId(proto.id)} />
+                  </div>
                   {proto.missing.length > 0 && (
                     <p className="mt-3 text-xs text-[#5C493E]">
                       <strong>Remaining work:</strong> {proto.missing.join(" • ")}
@@ -1137,25 +3498,36 @@ export default function GeekArchiveApp() {
               {visiblePrototypes.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
                   <p className="font-semibold text-[#2C1A10]">No projects found</p>
-                  <p className="mt-1 text-sm text-[#6E5A4F]">Try a different project name or add it to the archive.</p>
+                  <p className="mt-1 text-sm text-[#6E5A4F]">Try a different project name, technology or sector.</p>
                 </div>
               )}
             </div>
-          </div>
         )}
 
         {activeTab === "talent" && isYouth && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {showTalentForm && (
             <form
               onSubmit={handleAddTalent}
-              className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5"
+              aria-label={editingTalent ? "Edit my profile" : "Create my profile"}
+              className={`space-y-4 rounded-2xl border bg-white p-6 lg:col-span-5 ${
+                editingTalent ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]" : "border-[#E6DFD5]"
+              }`}
             >
               <div className="flex items-center gap-2">
-                <UserRoundPlus className="h-5 w-5 text-[#5E7A5E]" />
-                <h2 className="text-lg font-bold text-[#2C1A10]">My talent profile</h2>
+                {editingTalent ? (
+                  <Pencil className="h-5 w-5 text-[#5E7A5E]" />
+                ) : (
+                  <UserRoundPlus className="h-5 w-5 text-[#5E7A5E]" />
+                )}
+                <h2 className="text-lg font-bold text-[#2C1A10]">
+                  {editingTalent ? "Edit my profile" : "My talent profile"}
+                </h2>
               </div>
               <p className="text-xs leading-relaxed text-[#6E5A4F]">
-                Share the essentials so Geek Archive can connect you to the right project pod. Your profile is only shown to an organization when matched.
+                {editingTalent
+                  ? "Update anything that has changed, then save. Clearing an optional field removes it."
+                  : "Share the essentials so Geek Archive can connect you to the right project pod. SMMEs, NGOs and sponsors can see your profile when they browse student projects. Your email and phone number are never shown."}
               </p>
 
               <div>
@@ -1221,9 +3593,17 @@ export default function GeekArchiveApp() {
                 />
               </div>
 
-              <details className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-4 py-3">
+              <details
+                // Re-mount when switching to edit so filled-in optional details start open.
+                key={editingTalent ? "edit" : "create"}
+                open={
+                  editingTalent &&
+                  Boolean(newTalent.preferredFocus || newTalent.strengthArea || newTalent.location)
+                }
+                className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-4 py-3"
+              >
                 <summary className="cursor-pointer text-xs font-semibold text-[#3B2314]">
-                  Add optional matching details
+                  {editingTalent ? "Optional matching details" : "Add optional matching details"}
                 </summary>
                 <div className="mt-3 space-y-3">
                   <input
@@ -1266,28 +3646,47 @@ export default function GeekArchiveApp() {
                 </div>
               </details>
 
-              <button
-                type="submit"
-                className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
-              >
-                Save my profile
-              </button>
+              {talentError && (
+                <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                  {talentError}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={talentSaving}
+                  className="flex-1 rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+                >
+                  {talentSaving ? "Saving…" : editingTalent ? "Save changes" : "Save my profile"}
+                </button>
+                {editingTalent && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEditTalent}
+                    disabled={talentSaving}
+                    className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </form>
+            )}
 
-            <section className="space-y-4 lg:col-span-7">
+            <section className={`space-y-4 ${showTalentForm ? "lg:col-span-7" : "lg:col-span-8 lg:col-start-3"}`}>
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
                 <div>
                   <h2 className="text-lg font-bold text-[#2C1A10]">My profile</h2>
                   <p className="mt-1 text-xs text-[#6E5A4F]">
-                    Only your own profile appears in this dashboard.
+                    Visible to SMMEs, NGOs and sponsors. Your contact details stay private.
                   </p>
                 </div>
                 <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
-                  {ownTalentProfiles.length ? "Profile saved" : "No profile yet"}
+                  {ownTalentProfile ? "Profile saved" : "No profile yet"}
                 </span>
               </div>
 
-              {ownTalentProfiles.length === 0 ? (
+              {!ownTalentProfile ? (
                 <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
                   <p className="font-semibold text-[#2C1A10]">Your profile starts here</p>
                   <p className="mt-1 text-sm text-[#6E5A4F]">
@@ -1295,16 +3694,54 @@ export default function GeekArchiveApp() {
                   </p>
                 </div>
               ) : (
-                ownTalentProfiles.map((profile) => (
-                  <article key={profile.id} className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                [ownTalentProfile].map((profile) => (
+                  <article
+                    key={profile.id}
+                    aria-label="My saved profile"
+                    className={`rounded-2xl border bg-white p-5 ${
+                      editingTalent ? "border-[#5E7A5E] ring-2 ring-[#C8DD9F]" : "border-[#E6DFD5]"
+                    }`}
+                  >
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-base font-bold text-[#2C1A10]">{profile.name}</p>
                         <p className="mt-0.5 text-xs font-semibold text-[#5E7A5E]">{profile.role}</p>
+                        {editingTalent && (
+                          <p className="text-[11px] font-semibold text-[#5E7A5E]">Editing…</p>
+                        )}
                       </div>
-                      <span className="rounded-full bg-[#FAF8F5] px-3 py-1 text-xs font-semibold text-[#3B2314]">
-                        {profile.availability}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="rounded-full bg-[#FAF8F5] px-3 py-1 text-xs font-semibold text-[#3B2314]">
+                          {profile.availability}
+                        </span>
+                        {!editingTalent && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmDeleteTalent(false);
+                                handleStartEditTalent();
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-[#D8CFC4] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                              Edit profile
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTalentError("");
+                                setConfirmDeleteTalent(true);
+                              }}
+                              aria-label="Delete profile"
+                              className="inline-flex items-center gap-1 rounded-lg border border-[#E7C3BC] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#8A2C1E] hover:bg-[#FBEDEA]"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">Delete</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
                       {profile.skills.map((skill) => (
@@ -1336,6 +3773,41 @@ export default function GeekArchiveApp() {
                         </span>
                       )}
                     </div>
+                    {!showTalentForm && talentError && (
+                      <p role="alert" className="mt-3 rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                        {talentError}
+                      </p>
+                    )}
+                    {confirmDeleteTalent && !editingTalent && (
+                      <div
+                        role="alertdialog"
+                        aria-label="Confirm deleting your profile"
+                        className="mt-4 rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-3.5 py-3"
+                      >
+                        <p className="text-xs font-medium text-[#8A2C1E]">
+                          Delete your talent profile? You&apos;ll stop being matched to new project pods.
+                          Your account, projects and messages stay, and you can create a new profile any time.
+                        </p>
+                        <div className="mt-2.5 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleDeleteTalent}
+                            disabled={talentDeleting}
+                            className="rounded-lg bg-[#A33A2A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#8A2C1E] disabled:opacity-70"
+                          >
+                            {talentDeleting ? "Deleting…" : "Yes, delete my profile"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTalent(false)}
+                            disabled={talentDeleting}
+                            className="rounded-lg border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314]"
+                          >
+                            Keep it
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </article>
                 ))
               )}
@@ -1346,99 +3818,101 @@ export default function GeekArchiveApp() {
         {activeTab === "pods" && isYouth && (
           <section className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">
-                Youth dashboard
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
               <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">My pod workspace</h2>
             </div>
-            {youthMatchedOpportunity ? (
-              <div className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
-                <h3 className="font-bold text-[#2C1A10]">{youthMatchedOpportunity.title}</h3>
-                <div className="mt-4 space-y-2">
-                  {matchedResult.pod.map((member) => (
-                    <div
-                      key={member.role}
-                      className="rounded-lg border border-[#E6DFD5] bg-white p-3"
-                    >
-                      <p className="text-xs font-bold text-[#2C1A10]">
-                        {member.role}{member.assignee.startsWith(`${user.name} ·`) ? " · You" : ""}
-                      </p>
-                      <p className="mt-1 text-xs text-[#5C493E]">{member.task}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            {myPods.length ? (
+              myPods.map((pod) => (
+                <article key={pod.id} aria-label={`Pod: ${pod.projectTitle}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                    <span className="text-xs font-semibold text-[#5E7A5E]">{pod.stage}</span>
+                  </div>
+                  <p className="text-xs text-[#6E5A4F]">For {pod.orgName}</p>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#EFEAE4]">
+                    <div className="h-full rounded-full bg-[#5E7A5E]" style={{ width: `${pod.progress}%` }} />
+                  </div>
+                  <div className="mt-3 rounded-lg border border-[#E6DFD5] bg-white p-3">
+                    <p className="text-xs font-bold text-[#2C1A10]">{myRoleIn(pod)?.role} · You</p>
+                    <p className="mt-1 text-xs text-[#5C493E]">{myRoleIn(pod)?.task}</p>
+                  </div>
+                </article>
+              ))
             ) : (
               <div className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-7 text-center">
                 <p className="font-semibold text-[#2C1A10]">No pod invitation yet</p>
-                <p className="mt-1 text-sm text-[#6E5A4F]">
-                  Your workspace will show projects and tasks after you are matched to a pod.
-                </p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">Your workspace will show projects and tasks after you are matched to a pod.</p>
               </div>
             )}
           </section>
         )}
 
         {activeTab === "pods" && !isYouth && (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-            {pods.map((pod) => (
-              <div key={pod.id} className="flex flex-col justify-between rounded-2xl border border-[#E6DFD5] bg-white p-6">
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5E7A5E]">
-                      <Users className="h-4 w-4" />
-                      <span>{pod.stage}</span>
-                    </span>
-                    <span className="text-xs font-bold text-[#3B2314]">{pod.progress}%</span>
-                  </div>
-                  <h3 className="mt-2 text-lg font-bold text-[#2C1A10]">{pod.client}</h3>
-                  <p className="text-xs text-[#6E5A4F]">Prototype: {pod.prototype}</p>
-
-                  <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[#EFEAE4]">
-                    <div
-                      className="h-full rounded-full bg-[#5E7A5E] transition-all"
-                      style={{ width: `${pod.progress}%` }}
-                    />
-                  </div>
-
-                  <div className="mt-4 space-y-2">
-                    {pod.members.map((m) => (
-                      <div
-                        key={m.role}
-                        className="flex items-center justify-between rounded-xl bg-[#FAF8F5] px-3.5 py-2.5 text-xs border border-[#E6DFD5]"
-                      >
-                        <div>
-                          <span className="font-bold text-[#2C1A10]">{m.role}:</span>{" "}
-                          <span className="font-medium text-[#3B2314]">{m.name}</span>
-                          <p className="text-[#6E5A4F]">{m.focus}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="mt-5 pt-4 border-t border-[#E6DFD5] flex items-center justify-between">
-                  <span className="inline-flex items-center gap-1 text-xs text-[#5C493E]">
-                    <ShieldCheck className="h-4 w-4 text-[#5E7A5E]" />
-                    <span>Stakeholder Verification Gate</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleStakeholderSignOff(pod.id)}
-                    disabled={pod.progress === 100}
-                    className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
-                      pod.progress === 100
-                        ? "bg-[#EEF4EE] text-[#3F5D3F] cursor-default"
-                        : "bg-[#3B2314] text-white hover:bg-[#2C1A10]"
-                    }`}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>{pod.progress === 100 ? "Signed Off & Verified" : "Approve Sign-Off"}</span>
-                  </button>
-                </div>
+          <section className="space-y-4">
+            {podRequest.status === "done" && (
+              <p role="status" className="rounded-xl border border-[#B9DBA9] bg-[#EEF7E8] px-4 py-2.5 text-sm text-[#2F5A2F]">{podRequest.message}</p>
+            )}
+            {podRequest.status === "error" && (
+              <p role="alert" className="rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-4 py-2.5 text-sm text-[#8A2C1E]">{podRequest.message}</p>
+            )}
+            {orgPods.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                <Users className="mx-auto h-6 w-6 text-[#8FA58F]" />
+                <p className="mt-2 font-semibold text-[#2C1A10]">No pods yet</p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">Describe a need, pick a project and request a pod of verified students.</p>
+                <button type="button" onClick={() => setActiveTab("match")} className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline">
+                  Describe a need
+                </button>
               </div>
-            ))}
-          </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                {orgPods.map((pod) => (
+                  <article key={pod.id} aria-label={`Pod: ${pod.projectTitle}`} className="flex flex-col justify-between rounded-2xl border border-[#E6DFD5] bg-white p-6">
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5E7A5E]">
+                          <Users className="h-4 w-4" />
+                          <span>{pod.stage}</span>
+                        </span>
+                        <span className="text-xs font-bold text-[#3B2314]">{pod.progress}%</span>
+                      </div>
+                      <h3 className="mt-2 text-lg font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                      {pod.need && <p className="text-xs text-[#6E5A4F]">“{pod.need}”</p>}
+                      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[#EFEAE4]">
+                        <div className="h-full rounded-full bg-[#5E7A5E] transition-all" style={{ width: `${pod.progress}%` }} />
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {pod.members.map((m) => (
+                          <div key={m.role} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-3.5 py-2.5 text-xs">
+                            <span className="font-bold text-[#2C1A10]">{m.role}:</span>{" "}
+                            <span className="font-medium text-[#3B2314]">{m.name || "Looking for a verified student"}</span>
+                            <p className="text-[#6E5A4F]">{m.task}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-5 flex items-center justify-between border-t border-[#E6DFD5] pt-4">
+                      <span className="inline-flex items-center gap-1 text-xs text-[#5C493E]">
+                        <ShieldCheck className="h-4 w-4 text-[#5E7A5E]" />
+                        <span>Your sign-off issues the students' credentials</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleStakeholderSignOff(pod.id)}
+                        disabled={pod.signedOff}
+                        className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+                          pod.signedOff ? "cursor-default bg-[#EEF4EE] text-[#3F5D3F]" : "bg-[#3B2314] text-white hover:bg-[#2C1A10]"
+                        }`}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        <span>{pod.signedOff ? "Signed off" : "Approve sign-off"}</span>
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         )}
 
         {activeTab === "career" && isYouth && (
@@ -1449,14 +3923,29 @@ export default function GeekArchiveApp() {
                 <h2 className="text-lg font-bold text-[#2C1A10]">Verified Career Proof</h2>
               </div>
               <p className="text-xs text-[#6E5A4F]">
-                Completed pod milestones turn into verifiable deliverables across code, design, and commercial execution.
+                When an organisation signs off a pod you worked in, it becomes a credential here — proof of real
+                work for a real client.
               </p>
-              <div className="space-y-3 rounded-xl bg-[#FAF8F5] p-4 border border-[#E6DFD5] text-xs">
-                <p className="font-bold text-[#2C1A10]">Shipped Pod Credentials</p>
-                <p className="text-[#5C493E]">• Developer: Pull requests, API stability &amp; live deployment</p>
-                <p className="text-[#5C493E]">• UI/UX Designer: Mobile-first wireframes &amp; usability flow</p>
-                <p className="text-[#5C493E]">• Business Student: SMME/NGO pricing &amp; handover playbook</p>
-              </div>
+              {myCredentials.length ? (
+                <ul className="space-y-2.5">
+                  {myCredentials.map((pod) => (
+                    <li key={pod.id} className="rounded-xl border border-[#B9DBA9] bg-[#EEF7E8] p-4">
+                      <p className="flex items-center gap-1.5 text-sm font-bold text-[#1F3D1F]">
+                        <BadgeCheck className="h-4 w-4" />
+                        {myRoleIn(pod)?.role} · {pod.projectTitle}
+                      </p>
+                      <p className="mt-0.5 text-xs text-[#2F472F]">
+                        Signed off by {pod.orgName}
+                        {pod.signedOffAt && ` on ${new Date(pod.signedOffAt).toLocaleDateString()}`}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-4 text-xs text-[#6E5A4F]">
+                  No credentials yet. Finish a pod and get the organisation&apos;s sign-off to earn your first one.
+                </p>
+              )}
             </div>
 
             <form
@@ -1503,12 +3992,13 @@ export default function GeekArchiveApp() {
                 type="submit"
                 className="rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
               >
-                Get Interview Readiness Score
+                Get practice feedback
               </button>
 
               {interviewFeedback && (
                 <div className="rounded-xl border border-[#C8DEC8] bg-[#EEF4EE] p-4 text-xs text-[#263B26] space-y-1">
-                  <p className="text-sm font-bold">Readiness Score: {interviewFeedback.score}</p>
+                  <p className="text-sm font-bold">Practice score: {interviewFeedback.score}</p>
+                  <p className="text-[11px] text-[#3F5D3F]">Automatic practice feedback based on length and concrete detail — not an official assessment.</p>
                   <p>{interviewFeedback.strength}</p>
                   <p>
                     <strong>Tip:</strong> {interviewFeedback.nextStep}
@@ -1519,6 +4009,190 @@ export default function GeekArchiveApp() {
           </div>
         )}
       </main>
+
+      {openProject && (
+        <Modal
+          open
+          onClose={() => setOpenProjectId(null)}
+          title={openProject.title}
+          subtitle={[
+            openProject.ownerName && `Posted by ${openProject.ownerName}`,
+            openProject.domain,
+            openProject.postedAt && new Date(openProject.postedAt).toLocaleDateString(),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          size="xl"
+          footer={
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+              {!isYouth && openProject.ownerRole === "Youth Pod Talent" && (
+                <button
+                  type="button"
+                  onClick={() => openStudentProfile(openProject.ownerId)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#163126] hover:bg-[#FAF8F5]"
+                >
+                  <UserRound className="h-3.5 w-3.5" />
+                  View {openProject.ownerName?.split(" ")[0] || "student"}&apos;s profile
+                </button>
+              )}
+              {parseGitHubRepo(openProject.repo) ? (
+                <a
+                  href={parseGitHubRepo(openProject.repo).url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#163126] hover:bg-[#FAF8F5]"
+                >
+                  <Github className="h-3.5 w-3.5" />
+                  Open on GitHub
+                </a>
+              ) : (
+                <span className="text-xs text-[#8A786D]">No GitHub repository added yet.</span>
+              )}
+              </div>
+              {!isYouth && openProject.ownerRole === "Youth Pod Talent" && !sentRequestFor(openProject.id) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const project = openProject;
+                    setOpenProjectId(null);
+                    setActiveTab("discover");
+                    openContactForm(project);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  Contact {openProject.ownerName?.split(" ")[0] || "student"}
+                </button>
+              )}
+            </div>
+          }
+        >
+          {openProject.demoVideo ? (
+            <VideoPlayer project={openProject} autoplay />
+          ) : (
+            <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] px-4 py-3 text-xs text-[#6E5A4F]">
+              No demo video yet — you can ask the student for one when you get in touch.
+            </p>
+          )}
+          {openProject.summary && (
+            <p className="mt-5 text-base font-medium leading-relaxed text-[#2C1A10]">{openProject.summary}</p>
+          )}
+          {openProject.description && openProject.description !== openProject.summary && (
+            <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-[#5C493E]">
+              {openProject.description}
+            </p>
+          )}
+          {openProject.stack.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Built with</p>
+              <div className="flex flex-wrap gap-1.5">
+                {openProject.stack.map((tech) => (
+                  <span key={tech} className="rounded-md bg-[#EEF4EE] px-2.5 py-1 text-xs font-medium text-[#3F5D3F]">
+                    {tech}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {!isYouth && isVerified && (
+            <div className="mt-6">
+              <AiAnalysisPanel project={openProject} />
+            </div>
+          )}
+          {!isYouth && !isVerified && (
+            <p className="mt-6 rounded-xl border border-[#E8D9B5] bg-[#FBF5E6] px-4 py-3 text-xs text-[#6B5320]">
+              Verify your organisation to run an AI analysis of this project.
+            </p>
+          )}
+        </Modal>
+      )}
+
+      {user && (
+        <Modal
+          open={showVerify}
+          onClose={() => setShowVerify(false)}
+          title="Verify your account"
+          subtitle={isYouth ? "Students, developers and IT professionals" : "SMMEs, NGOs and sponsors"}
+          size="lg"
+        >
+          <VerificationCenter
+            key={`${user.id}-${myVerification?.status || "none"}`}
+            user={user}
+            group={isYouth ? "youth" : "organization"}
+            verification={myVerification}
+            supabaseMode={Boolean(supabase)}
+            onSubmit={handleSubmitVerification}
+            onLinkGitHub={handleLinkGitHub}
+          />
+        </Modal>
+      )}
+
+      {user && (
+        <Modal open={showPrivacy} onClose={() => setShowPrivacy(false)} title="Privacy & my data" subtitle="Your rights under POPIA" size="lg">
+          <PrivacyCenter
+            user={{ ...user, isYouth }}
+            consentAt={consentAt}
+            summary={privacySummary}
+            buildExport={buildMyDataExport}
+            onDeleteAccount={handleDeleteAccount}
+          />
+        </Modal>
+      )}
+
+      {user && (
+        <Modal open={recoveringPassword} onClose={() => setRecoveringPassword(false)} title="Choose a new password" size="md">
+          <form onSubmit={handleSetNewPassword} className="space-y-3">
+            <label htmlFor="new-password" className="block text-xs font-semibold text-[#3B2314]">New password</label>
+            <input
+              id="new-password"
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              required
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+            />
+            {recoveryMessage.type === "error" && (
+              <p role="alert" className="text-xs text-[#8A2C1E]">{recoveryMessage.text}</p>
+            )}
+            <button type="submit" className="rounded-xl bg-[#163126] px-4 py-2.5 text-sm font-semibold text-[#C8DD9F]">
+              Save new password
+            </button>
+          </form>
+        </Modal>
+      )}
+      {recoveryMessage.type === "ok" && (
+        <p role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-xl bg-[#163126] px-4 py-2.5 text-sm font-semibold text-[#C8DD9F] shadow-lg">
+          {recoveryMessage.text}
+        </p>
+      )}
+
+      <ConsentGate
+        open={needsConsent}
+        userName={user?.name || ""}
+        onAgree={handleConsent}
+        onSignOut={handleSignOut}
+      />
+
+      {viewedProfile && (
+        <Modal
+          open
+          onClose={() => setViewProfileUserId(null)}
+          title={`${viewedProfile.name}'s profile`}
+          subtitle="Student / developer on Geek Archive"
+          size="lg"
+        >
+          <StudentProfile
+            name={viewedProfile.name}
+            profile={viewedProfile.profile}
+            projects={viewedProfile.projects}
+            onOpenProject={openProjectFromProfile}
+            contactStatusFor={(projectId) => sentRequestFor(projectId)?.status}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
