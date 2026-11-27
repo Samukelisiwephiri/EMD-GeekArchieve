@@ -48,6 +48,7 @@ import { CATEGORIES, CATEGORY_BY_ID, categoryLabel, suggestCategory } from "../l
 import GitHubImport from "./GitHubImport";
 import SearchSuggest, { matchProject } from "./SearchSuggest";
 import AiRecommendPanel from "./AiRecommendPanel";
+import LandingSections, { EventBadge } from "./LandingSections";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -1971,7 +1972,7 @@ export default function GeekArchiveApp() {
 
   if (showAuthLanding) {
     return (
-      <div className="relative min-h-screen w-full overflow-hidden text-white flex flex-col justify-between">
+      <div id="top" className="relative flex min-h-screen w-full flex-col justify-between overflow-x-hidden bg-gradient-to-b from-[#10291D] via-[#163126] to-[#10291D] text-white">
         <InteractiveAuthBackdrop />
 
         <header className="relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
@@ -1997,6 +1998,8 @@ export default function GeekArchiveApp() {
 
         <main className="relative z-10 mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-6 py-10 lg:grid-cols-12">
           <div className="space-y-6 lg:col-span-7">
+            <EventBadge />
+            <br />
             <span className="inline-flex items-center gap-2 rounded-full border border-[#C8DD9F]/25 bg-[#C8DD9F]/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-[#E3ECCF]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#C8DD9F]" />
               <span>Ideas become jobs. Builds become proof.</span>
@@ -2219,6 +2222,8 @@ export default function GeekArchiveApp() {
             </div>
           </div>
         </main>
+
+        <LandingSections />
 
         <footer className="relative z-10 mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-6 py-4 text-xs text-[#DFD7CE]">
           <span>Geek Archive • Embedded Intelligence</span>
@@ -2496,6 +2501,25 @@ export default function GeekArchiveApp() {
                   </>
                 )}
               </h1>
+              <dl className="flex flex-wrap gap-2 pt-1" aria-label="Your Geek Archive at a glance">
+                {(isYouth
+                  ? [
+                      ["Projects shown", myProjects.filter((p) => p.showcased !== false).length],
+                      ["Active pods", myActivePods.length],
+                      ["Credentials", myCredentials.length],
+                    ]
+                  : [
+                      ["Verified projects", youthPostedProjects.length],
+                      ["Categories", categoryOptions.length],
+                      ["Your pods", orgPods.length],
+                    ]
+                ).map(([label, value]) => (
+                  <div key={label} className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-[#E7EEE2]">
+                    <dt className="inline">{label}: </dt>
+                    <dd className="inline font-bold text-[#C8DD9F]">{value}</dd>
+                  </div>
+                ))}
+              </dl>
               <p className="max-w-xl text-sm leading-relaxed text-[#D5DED2]">
                 {isYouth
                   ? "Create your talent profile, join a project pod, and turn shipped work into career proof."

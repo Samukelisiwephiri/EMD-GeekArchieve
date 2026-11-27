@@ -1,4 +1,7 @@
 import "./globals.css";
+import { Plus_Jakarta_Sans } from "next/font/google";
+
+const sans = Plus_Jakarta_Sans({ subsets: ["latin"], display: "swap", variable: "--font-sans" });
 
 export const metadata = {
   title: "Geek Archive — Build work that matters",
@@ -12,8 +15,8 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-[#FAF8F5] text-[#2C1A10] antialiased">
+    <html lang="en" className={sans.variable}>
+      <body className={`${sans.className} min-h-screen bg-[#FAF8F5] text-[#2C1A10] antialiased`}>
         {children}
       </body>
     </html>
