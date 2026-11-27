@@ -85,6 +85,32 @@ const toPrototypeRow = (project) => ({
 // Demo mode has no real accounts, so a user is identified by their name.
 const demoUserId = (name) => `demo:${String(name || "").trim().toLowerCase()}`;
 
+// ["React", "react", "Flutter", ""] -> [{ key: "flutter", label: "Flutter", count: 1 },
+//                                     { key: "react", label: "React", count: 2 }]
+const countOptions = (values) => {
+  const byKey = new Map();
+  values.forEach((value) => {
+    const spelling = String(value || "").trim();
+    if (!spelling) return;
+    const key = spelling.toLowerCase();
+    const entry = byKey.get(key) || { key, count: 0, spellings: new Map() };
+    entry.count += 1;
+    entry.spellings.set(spelling, (entry.spellings.get(spelling) || 0) + 1);
+    byKey.set(key, entry);
+  });
+  // Show the most common spelling; on a tie prefer one that starts with a capital.
+  const startsUpper = (s) => (s[0] !== s[0].toLowerCase() ? 1 : 0);
+  return [...byKey.values()]
+    .map(({ key, count, spellings }) => ({
+      key,
+      count,
+      label: [...spellings.entries()].sort(
+        ([a, na], [b, nb]) => nb - na || startsUpper(b) - startsUpper(a)
+      )[0][0],
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+};
+
 // "Thandi Mokoena" -> "TM"
 const initialsOf = (name) =>
   String(name || "?")
@@ -308,6 +334,8 @@ export default function GeekArchiveApp() {
   const [pods, setPods] = useState(SAMPLE_PODS);
   const [archiveQuery, setArchiveQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
+  const [discoverSkill, setDiscoverSkill] = useState(""); // lower-case skill, "" = all
+  const [discoverSector, setDiscoverSector] = useState(""); // lower-case sector, "" = all
   const [talentProfiles, setTalentProfiles] = useState([]);
   const [newTalent, setNewTalent] = useState({
     name: "Naledi Khumalo",
@@ -849,12 +877,28 @@ export default function GeekArchiveApp() {
   // - Organizations/sponsors can discover every project posted by youth talent.
   const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
   const youthPostedProjects = prototypes.filter((proto) => proto.ownerRole === "Youth Pod Talent");
-  const discoveredProjects = youthPostedProjects.filter((proto) =>
-    [proto.title, proto.domain, proto.summary, proto.description, proto.ownerName, ...proto.stack]
-      .join(" ")
-      .toLowerCase()
-      .includes(discoverQuery.trim().toLowerCase())
+  // Filter options come from what students actually posted. Matching ignores case,
+  // so "react" and "React" count as the same skill.
+  const skillOptions = countOptions(youthPostedProjects.flatMap((proto) => proto.stack));
+  const sectorOptions = countOptions(youthPostedProjects.map((proto) => proto.domain));
+  // A filter whose last project was deleted quietly falls back to "All".
+  const activeSkill = skillOptions.some((o) => o.key === discoverSkill) ? discoverSkill : "";
+  const activeSector = sectorOptions.some((o) => o.key === discoverSector) ? discoverSector : "";
+  const hasDiscoverFilters = Boolean(activeSkill || activeSector || discoverQuery.trim());
+  const discoveredProjects = youthPostedProjects.filter(
+    (proto) =>
+      (!activeSkill || proto.stack.some((tech) => tech.toLowerCase() === activeSkill)) &&
+      (!activeSector || (proto.domain || "").toLowerCase() === activeSector) &&
+      [proto.title, proto.domain, proto.summary, proto.description, proto.ownerName, ...proto.stack]
+        .join(" ")
+        .toLowerCase()
+        .includes(discoverQuery.trim().toLowerCase())
   );
+  const clearDiscoverFilters = () => {
+    setDiscoverQuery("");
+    setDiscoverSkill("");
+    setDiscoverSector("");
+  };
   const talentRoleFor = (ownerName) =>
     talentProfiles.find((profile) => profile.name.toLowerCase() === String(ownerName).toLowerCase())
       ?.role;
@@ -1614,29 +1658,89 @@ export default function GeekArchiveApp() {
                 <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
                   {youthPostedProjects.length} posted
                 </span>
-                <label className="relative w-full">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7C8B80]" />
-                  <input
-                    type="search"
-                    value={discoverQuery}
-                    onChange={(e) => setDiscoverQuery(e.target.value)}
-                    placeholder="Search by project, skill, sector or person"
-                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] py-2.5 pl-9 pr-3 text-sm sm:max-w-sm"
-                  />
-                </label>
               </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Search</span>
+                  <span className="relative block">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7C8B80]" />
+                    <input
+                      type="search"
+                      value={discoverQuery}
+                      onChange={(e) => setDiscoverQuery(e.target.value)}
+                      placeholder="Project, skill, sector or person"
+                      className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] py-2.5 pl-9 pr-3 text-sm"
+                    />
+                  </span>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Skill</span>
+                  <select
+                    value={activeSkill}
+                    onChange={(e) => setDiscoverSkill(e.target.value)}
+                    disabled={!skillOptions.length}
+                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2.5 text-sm disabled:opacity-60"
+                  >
+                    <option value="">All skills</option>
+                    {skillOptions.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label} ({option.count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Sector</span>
+                  <select
+                    value={activeSector}
+                    onChange={(e) => setDiscoverSector(e.target.value)}
+                    disabled={!sectorOptions.length}
+                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2.5 text-sm disabled:opacity-60"
+                  >
+                    <option value="">All sectors</option>
+                    {sectorOptions.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label} ({option.count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={clearDiscoverFilters}
+                  disabled={!hasDiscoverFilters}
+                  className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Clear filters
+                </button>
+              </div>
+              {youthPostedProjects.length > 0 && (
+                <p className="mt-3 text-xs text-[#6E5A4F]" aria-live="polite">
+                  Showing {discoveredProjects.length} of {youthPostedProjects.length} projects
+                </p>
+              )}
             </div>
 
             {discoveredProjects.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
                 <p className="font-semibold text-[#2C1A10]">
-                  {youthPostedProjects.length ? "No projects match your search" : "No student projects posted yet"}
+                  {youthPostedProjects.length ? "No projects match your filters" : "No student projects posted yet"}
                 </p>
                 <p className="mt-1 text-sm text-[#6E5A4F]">
                   {youthPostedProjects.length
-                    ? "Try a different skill, sector or name."
+                    ? "Try a different skill, sector or search."
                     : "When students and developers post their work, it will appear here."}
                 </p>
+                {youthPostedProjects.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearDiscoverFilters}
+                    className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline"
+                  >
+                    Clear filters
+                  </button>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -1667,14 +1771,25 @@ export default function GeekArchiveApp() {
                     )}
                     {proto.stack.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-1.5">
-                        {proto.stack.map((tech) => (
-                          <span
-                            key={tech}
-                            className="rounded-md bg-[#EEF4EE] px-2.5 py-0.5 text-xs font-medium text-[#3F5D3F]"
-                          >
-                            {tech}
-                          </span>
-                        ))}
+                        {proto.stack.map((tech) => {
+                          const selected = activeSkill === tech.toLowerCase();
+                          return (
+                            <button
+                              key={tech}
+                              type="button"
+                              onClick={() => setDiscoverSkill(selected ? "" : tech.toLowerCase())}
+                              aria-pressed={selected}
+                              title={selected ? "Show all skills" : `Show only ${tech} projects`}
+                              className={`rounded-md px-2.5 py-0.5 text-xs font-medium transition ${
+                                selected
+                                  ? "bg-[#163126] text-[#C8DD9F]"
+                                  : "bg-[#EEF4EE] text-[#3F5D3F] hover:bg-[#DDEBD8]"
+                              }`}
+                            >
+                              {tech}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                     {isHttpUrl(proto.repo) && (
