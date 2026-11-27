@@ -31,6 +31,8 @@ import {
   Send,
   Phone,
   Inbox,
+  Lock,
+  BadgeCheck,
   UserRound,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
@@ -38,6 +40,10 @@ import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
 import Modal from "./Modal";
 import StudentProfile from "./StudentProfile";
 import AiAnalysisPanel from "./AiAnalysisPanel";
+import VerificationCenter, { VerifiedBadge } from "./VerificationCenter";
+import AdminVerifications from "./AdminVerifications";
+import { ConsentGate, PrivacyCenter, PrivacyNotice } from "./Privacy";
+import { ACCOUNT_TYPES, POPIA_NOTICE_VERSION, isInstitutionEmail } from "../lib/verification";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -118,6 +124,32 @@ const fromContactRow = (row) => ({
 
 const CONTACT_MESSAGE_MIN = 10;
 const CONTACT_MESSAGE_MAX = 2000;
+
+// --- Verification records (Supabase <-> app) ---------------------------------------
+const VERIFICATION_COLUMNS =
+  "user_id, account_type, status, method, institution, evidence_url, github_username, " +
+  "org_name, registration_number, website, submitted_at, reviewed_at, review_note";
+
+const fromVerificationRow = (row, extra = {}) => ({
+  userId: row.user_id,
+  accountType: row.account_type,
+  status: row.status,
+  method: row.method,
+  institution: row.institution || "",
+  evidenceUrl: row.evidence_url || "",
+  githubUsername: row.github_username || "",
+  orgName: row.org_name || "",
+  registrationNumber: row.registration_number || "",
+  website: row.website || "",
+  submittedAt: row.submitted_at,
+  reviewedAt: row.reviewed_at,
+  reviewNote: row.review_note || "",
+  userName: row.display_name || extra.userName || "",
+  email: row.email || extra.email || "",
+});
+
+// Demo admin account for reviewing verification requests without Supabase.
+const DEMO_ADMIN_EMAIL = "admin@geekarchive.demo";
 
 // Demo mode has no real accounts, so a user is identified by their name.
 const demoUserId = (name) => `demo:${String(name || "").trim().toLowerCase()}`;
@@ -318,6 +350,28 @@ const INTERVIEW_PROMPTS = {
     "How did you shape the pricing, handover steps, and value proposition so a small business can adopt the tool within its first week?",
 };
 
+// Shown in place of features that need a verified account.
+function VerifyGate({ title, text, status, onVerify, className = "" }) {
+  return (
+    <div className={`rounded-2xl border border-[#C8DD9F] bg-gradient-to-br from-[#F4F9EC] to-white p-6 ${className}`}>
+      <BadgeCheck className="h-7 w-7 text-[#5E7A5E]" />
+      <h2 className="mt-3 text-lg font-bold text-[#163126]">{title}</h2>
+      <p className="mt-1 text-sm text-[#3E4F46]">{text}</p>
+      {status === "pending" && (
+        <p className="mt-3 rounded-lg bg-[#FBF5E6] px-3 py-2 text-xs text-[#6B5320]">Your request is being reviewed.</p>
+      )}
+      <button
+        type="button"
+        onClick={onVerify}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2.5 text-sm font-semibold text-[#C8DD9F]"
+      >
+        <BadgeCheck className="h-4 w-4" />
+        {status === "pending" ? "View my request" : "Verify my account"}
+      </button>
+    </div>
+  );
+}
+
 // Small count bubble on a menu tab (e.g. unread messages). Screen readers hear ", 2 unread".
 function TabBadge({ count }) {
   if (!count) return null;
@@ -413,9 +467,34 @@ export default function GeekArchiveApp() {
     experienceLevel: "Student / Junior",
     location: "",
   });
+  // Verification (by user id), POPIA consent and the related windows.
+  const [verifications, setVerifications] = useState({});
+  const [consents, setConsents] = useState({});
+  const [adminRequests, setAdminRequests] = useState([]);
+  const [showVerify, setShowVerify] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showNotice, setShowNotice] = useState(false);
+  const [signupConsent, setSignupConsent] = useState(false);
+
   const dashboardRole = user?.role || authRole;
   const isYouth = dashboardRole === "Youth Pod Talent";
-  const navTabs = isYouth
+  const isAdmin = Boolean(user?.isAdmin);
+  const myVerification = user?.id ? verifications[user.id] || null : null;
+  const isVerified = isAdmin || myVerification?.status === "verified";
+  // With Supabase, row-level security only returns verified students' work, so every
+  // loaded row is from a verified owner. In demo mode we check the local records.
+  const isOwnerVerified = (ownerId) => (supabase ? true : verifications[ownerId]?.status === "verified");
+  // Organisations must be verified to see student work, and students must be verified to be shown.
+  const canSeeStudentWork = (ownerId) => isVerified && isOwnerVerified(ownerId);
+  const consentAt = user?.consentAt || (user?.id ? consents[user.id] : null) || null;
+  const needsConsent = Boolean(user) && !showAuthLanding && !consentAt;
+  const navTabs = isAdmin
+    ? [
+        { id: "verifications", label: "Verifications" },
+        { id: "discover", label: "Discover projects" },
+        { id: "archive", label: "Browse projects" },
+      ]
+    : isYouth
     ? [
         { id: "opportunities", label: "Matched opportunities" },
         { id: "talent", label: "My profile" },
@@ -488,12 +567,13 @@ export default function GeekArchiveApp() {
       const authUser = session.user;
       const { data: profile } = await supabase
         .from("profiles")
-        .select("display_name, role")
+        .select("display_name, role, popia_consent_at")
         .eq("id", authUser.id)
         .maybeSingle();
       if (cancelled) return;
       const storedRole = profile?.role || authUser.user_metadata?.role;
-      const role = ["organization", "admin"].includes(storedRole) ? "SMME / NGO" : "Youth Pod Talent";
+      const isAdminAccount = storedRole === "admin";
+      const role = isAdminAccount ? "Admin" : storedRole === "organization" ? "SMME / NGO" : "Youth Pod Talent";
       const name =
         profile?.display_name ||
         authUser.user_metadata?.display_name ||
@@ -506,9 +586,11 @@ export default function GeekArchiveApp() {
         role,
         email: authUser.email || "",
         provider: authUser.app_metadata?.provider || "email",
+        isAdmin: isAdminAccount,
+        consentAt: profile?.popia_consent_at || null,
       });
       setNewTalent((current) => ({ ...current, name }));
-      setActiveTab(role === "Youth Pod Talent" ? "talent" : "match");
+      setActiveTab(isAdminAccount ? "verifications" : role === "Youth Pod Talent" ? "talent" : "match");
       setShowAuthLanding(false);
     };
 
@@ -610,11 +692,55 @@ export default function GeekArchiveApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedInUserId, isYouth]);
 
+  // Load this user's verification (and, for admins, the review queue).
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    (async () => {
+      let { data } = await supabase
+        .from("verifications")
+        .select(VERIFICATION_COLUMNS)
+        .eq("user_id", signedInUserId)
+        .maybeSingle();
+      // Back from linking GitHub: re-submit so the database checks the linked identity.
+      let pendingGitHub = null;
+      try {
+        pendingGitHub = window.localStorage.getItem("ga-verify-github");
+        if (pendingGitHub) window.localStorage.removeItem("ga-verify-github");
+      } catch {
+        pendingGitHub = null;
+      }
+      if (pendingGitHub && data?.status !== "verified") {
+        const res = await supabase
+          .from("verifications")
+          .upsert({ user_id: signedInUserId, account_type: pendingGitHub, method: "github_oauth" }, { onConflict: "user_id" })
+          .select(VERIFICATION_COLUMNS)
+          .single();
+        if (!res.error) data = res.data;
+      }
+      if (cancelled) return;
+      if (data) setVerifications({ [signedInUserId]: fromVerificationRow(data) });
+      if (user?.isAdmin) {
+        const { data: rows } = await supabase.rpc("admin_list_verifications");
+        if (!cancelled && rows) setAdminRequests(rows.map((row) => fromVerificationRow(row)));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedInUserId, user?.isAdmin]);
+
   const handleAuthSubmit = async (e, providerLabel = "Email") => {
     if (e) e.preventDefault();
     setAuthError("");
     setAuthNotice("");
     const isOAuth = providerLabel === "Google" || providerLabel === "GitHub";
+
+    if (!isOAuth && authMode === "signup" && !signupConsent) {
+      setAuthError("Please agree to the privacy notice to create an account.");
+      return;
+    }
 
     if (supabase) {
       setAuthLoading(true);
@@ -635,6 +761,8 @@ export default function GeekArchiveApp() {
               data: {
                 display_name: nameFromEmail(authEmail),
                 role: authRole === "SMME / NGO" ? "organization" : "youth",
+                popia_consent_at: new Date().toISOString(),
+                popia_notice_version: POPIA_NOTICE_VERSION,
               },
             },
           });
@@ -666,19 +794,25 @@ export default function GeekArchiveApp() {
         : "Zinhle Ndlovu"
       : nameFromEmail(authEmail) || "Tshepo Molefe";
 
+    const demoAdmin = !isOAuth && authEmail.trim().toLowerCase() === DEMO_ADMIN_EMAIL;
     // If this demo user already saved a profile, keep the name they chose there.
-    const demoId = demoUserId(derivedName);
-    const displayName =
-      talentProfiles.find((profile) => profile.userId === demoId)?.name || derivedName;
+    const demoId = demoAdmin ? "demo:admin" : demoUserId(derivedName);
+    const displayName = demoAdmin
+      ? "Geek Archive Admin"
+      : talentProfiles.find((profile) => profile.userId === demoId)?.name || derivedName;
+    if (!isOAuth && authMode === "signup" && signupConsent) {
+      setConsents((current) => ({ ...current, [demoId]: current[demoId] || new Date().toISOString() }));
+    }
     setUser({
       id: demoId,
       email: isOAuth ? "" : authEmail.trim(),
       name: displayName,
-      role: authRole,
+      role: demoAdmin ? "Admin" : authRole,
       provider: providerLabel,
+      isAdmin: demoAdmin,
     });
     setNewTalent((current) => ({ ...current, name: displayName }));
-    setActiveTab(authRole === "Youth Pod Talent" ? "talent" : "match");
+    setActiveTab(demoAdmin ? "verifications" : authRole === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
   };
 
@@ -691,6 +825,10 @@ export default function GeekArchiveApp() {
       setTalentProfiles([]);
     }
     setUser(null);
+    setShowVerify(false);
+    setShowPrivacy(false);
+    setAdminRequests([]);
+    if (supabase) setVerifications({});
     setEditingTalent(false);
     setTalentError("");
     setConfirmDeleteTalent(false);
@@ -723,6 +861,7 @@ export default function GeekArchiveApp() {
     const text = problemBrief.toLowerCase();
     const searchTerms = text.split(/[^a-z0-9]+/).filter((term) => term.length > 2);
     const rankedProjects = prototypes
+      .filter((project) => project.ownerRole !== "Youth Pod Talent" || canSeeStudentWork(project.ownerId))
       .map((project) => {
         const searchable = [
           project.title,
@@ -745,7 +884,9 @@ export default function GeekArchiveApp() {
       .sort((a, b) => b.score - a.score);
     const chosenProto = rankedProjects[0]?.score > 0 ? rankedProjects[0].project : null;
     const findTalentProfile = (role) => {
-      const candidates = talentDirectory.filter((profile) => profile.role === role);
+      const candidates = talentDirectory.filter(
+        (profile) => profile.role === role && canSeeStudentWork(profile.userId)
+      );
       if (!candidates.length) return null;
       const normalizedBrief = text.replace(/[^a-z0-9]+/g, " ").trim();
       const matched = candidates.find((profile) =>
@@ -1258,6 +1399,7 @@ export default function GeekArchiveApp() {
   };
 
   const visiblePrototypes = prototypes.filter((proto) => {
+    if (proto.ownerRole === "Youth Pod Talent" && !canSeeStudentWork(proto.ownerId)) return false;
     const searchable = [
       proto.title,
       proto.domain,
@@ -1274,6 +1416,149 @@ export default function GeekArchiveApp() {
   // Who sees what:
   // - Youth only ever see the projects they posted themselves (never another developer's).
   // - Organizations/sponsors can discover every project posted by youth talent.
+  // --- Verification, consent and POPIA rights ----------------------------------------
+  const adminRequestList = supabase ? adminRequests : Object.values(verifications);
+
+  const handleSubmitVerification = async (record) => {
+    if (!user?.id) return;
+    const base = { ...record, userId: user.id, userName: user.name, email: user.email || "" };
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("verifications")
+        .upsert(
+          {
+            user_id: user.id,
+            account_type: record.accountType,
+            method: record.method,
+            institution: record.institution || null,
+            evidence_url: record.evidenceUrl || null,
+            github_username: record.githubUsername || null,
+            org_name: record.orgName || null,
+            registration_number: record.registrationNumber || null,
+            website: record.website || null,
+          },
+          { onConflict: "user_id" }
+        )
+        .select(VERIFICATION_COLUMNS)
+        .single();
+      if (error) throw error;
+      setVerifications((current) => ({ ...current, [user.id]: fromVerificationRow(data, base) }));
+      return;
+    }
+    // Demo mode: university emails and GitHub checks verify instantly; the rest wait for an admin.
+    const instant =
+      (record.method === "institution_email" && isInstitutionEmail(user.email)) || record.method === "github_bio";
+    const now = new Date().toISOString();
+    setVerifications((current) => ({
+      ...current,
+      [user.id]: {
+        ...base,
+        status: instant ? "verified" : "pending",
+        submittedAt: now,
+        reviewedAt: instant ? now : null,
+        reviewNote: "",
+      },
+    }));
+  };
+
+  const handleLinkGitHub = async (accountType) => {
+    // Remember what to finish after GitHub sends the user back.
+    try {
+      window.localStorage.setItem("ga-verify-github", accountType);
+    } catch {
+      // Storage unavailable: the user can press "Connect GitHub" again after returning.
+    }
+    const { error } = await supabase.auth.linkIdentity({
+      provider: "github",
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) throw error;
+  };
+
+  const handleReviewVerification = async (userId, decision, note) => {
+    if (!isAdmin) return;
+    if (supabase) {
+      const { error } = await supabase.rpc("review_verification", {
+        p_user_id: userId,
+        p_decision: decision,
+        p_note: note || null,
+      });
+      if (error) throw error;
+      setAdminRequests((current) =>
+        current.map((r) => (r.userId === userId ? { ...r, status: decision, reviewNote: note, reviewedAt: new Date().toISOString() } : r))
+      );
+      return;
+    }
+    setVerifications((current) => ({
+      ...current,
+      [userId]: { ...current[userId], status: decision, reviewNote: note, reviewedAt: new Date().toISOString() },
+    }));
+  };
+
+  const handleConsent = async () => {
+    if (!user?.id) return;
+    const now = new Date().toISOString();
+    if (supabase) {
+      const { error } = await supabase.rpc("record_popia_consent", { p_version: POPIA_NOTICE_VERSION });
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+      setUser((current) => ({ ...current, consentAt: now }));
+      return;
+    }
+    setConsents((current) => ({ ...current, [user.id]: now }));
+  };
+
+  const myMessages = contactRequests.filter((r) => r.studentId === user?.id || r.orgId === user?.id);
+  const privacySummary = [
+    { label: "Name", value: user?.name || "—" },
+    { label: "Email", value: user?.email || "—" },
+    { label: "Role", value: user?.role || "—" },
+    { label: "Verification", value: myVerification ? `${ACCOUNT_TYPES[myVerification.accountType]?.label || ""} · ${myVerification.status}` : "Not started" },
+    ...(isYouth
+      ? [
+          { label: "Talent profile", value: ownTalentProfile ? "Saved" : "None" },
+          { label: "Projects", value: String(prototypes.filter((p) => p.ownerId === user?.id).length) },
+        ]
+      : []),
+    { label: "Messages", value: String(myMessages.length) },
+  ];
+
+  const buildMyDataExport = () => ({
+    exportedAt: new Date().toISOString(),
+    privacyNoticeVersion: POPIA_NOTICE_VERSION,
+    account: { id: user?.id, name: user?.name, email: user?.email, role: user?.role, consentAt },
+    verification: myVerification,
+    talentProfile: ownTalentProfile,
+    projects: prototypes.filter((p) => p.ownerId === user?.id),
+    messages: myMessages,
+  });
+
+  const handleDeleteAccount = async () => {
+    if (!user?.id) return;
+    const id = user.id;
+    if (supabase) {
+      const { error } = await supabase.rpc("delete_my_account");
+      if (error) throw error;
+    } else {
+      setTalentProfiles((current) => current.filter((p) => p.userId !== id));
+      setPrototypes((current) => current.filter((p) => p.ownerId !== id));
+      setContactRequests((current) => current.filter((r) => r.studentId !== id && r.orgId !== id));
+      setVerifications((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setConsents((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
+    await handleSignOut();
+  };
+
   const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
 
   // Every talent profile with a display name. Profiles loaded from the database for
@@ -1303,7 +1588,9 @@ export default function GeekArchiveApp() {
     setOpenProjectId(projectId);
   };
   const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
-  const youthPostedProjects = prototypes.filter((proto) => proto.ownerRole === "Youth Pod Talent");
+  const youthPostedProjects = prototypes.filter(
+    (proto) => proto.ownerRole === "Youth Pod Talent" && canSeeStudentWork(proto.ownerId)
+  );
   // Filter options come from what students actually posted. Matching ignores case,
   // so "react" and "React" count as the same skill.
   const skillOptions = countOptions(youthPostedProjects.flatMap((proto) => proto.stack));
@@ -1660,6 +1947,31 @@ export default function GeekArchiveApp() {
                     className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm text-[#2C1A10] focus:border-[#5E7A5E] focus:outline-none"
                   />
                 </div>
+                {authMode === "signup" ? (
+                  <label className="flex items-start gap-2 text-xs text-[#3B2314]">
+                    <input
+                      type="checkbox"
+                      checked={signupConsent}
+                      onChange={(e) => setSignupConsent(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 accent-[#5E7A5E]"
+                    />
+                    <span>
+                      I agree to the{" "}
+                      <button type="button" onClick={() => setShowNotice(true)} className="font-semibold text-[#3F5D3F] underline">
+                        privacy notice
+                      </button>{" "}
+                      (POPIA).
+                    </span>
+                  </label>
+                ) : (
+                  <p className="text-[11px] text-[#6E5A4F]">
+                    By continuing you agree to our{" "}
+                    <button type="button" onClick={() => setShowNotice(true)} className="font-semibold text-[#3F5D3F] underline">
+                      privacy notice
+                    </button>
+                    .
+                  </p>
+                )}
                 <button
                   type="submit"
                   disabled={authLoading}
@@ -1681,8 +1993,15 @@ export default function GeekArchiveApp() {
 
         <footer className="relative z-10 mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-6 py-4 text-xs text-[#DFD7CE]">
           <span>Geek Archive • Embedded Intelligence</span>
+          <button type="button" onClick={() => setShowNotice(true)} className="inline-flex items-center gap-1 underline-offset-2 hover:underline">
+            <Lock className="h-3 w-3" />
+            Privacy notice (POPIA)
+          </button>
           <span>Move your cursor to interact with the pod network</span>
         </footer>
+        <Modal open={showNotice} onClose={() => setShowNotice(false)} title="Privacy notice" subtitle="How Geek Archive handles your information" size="lg">
+          <PrivacyNotice />
+        </Modal>
       </div>
     );
   }
@@ -1735,10 +2054,22 @@ export default function GeekArchiveApp() {
                     {initialsOf(user.name)}
                   </span>
                   <div className="max-w-[150px] leading-tight">
-                    <p className="truncate text-xs font-semibold text-[#2C1A10]">{user.name}</p>
+                    <p className="flex items-center gap-1 truncate text-xs font-semibold text-[#2C1A10]">
+                      <span className="truncate">{user.name}</span>
+                      {isVerified && <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-[#2F7A3A]" aria-label="Verified" />}
+                    </p>
                     <p className="truncate text-[11px] font-medium text-[#5E7A5E]">{user.role}</p>
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPrivacy(true)}
+                  aria-label="Privacy & my data"
+                  title="Privacy & my data"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#D8CFC4] bg-white text-[#3B2314] hover:bg-[#FAF8F5]"
+                >
+                  <Lock className="h-4 w-4" />
+                </button>
                 <button
                   type="button"
                   onClick={handleSignOut}
@@ -1809,10 +2140,24 @@ export default function GeekArchiveApp() {
                       {initialsOf(user.name)}
                     </span>
                     <div className="min-w-0 leading-tight">
-                      <p className="truncate text-sm font-semibold text-[#2C1A10]">{user.name}</p>
+                      <p className="flex items-center gap-1 truncate text-sm font-semibold text-[#2C1A10]">
+                        <span className="truncate">{user.name}</span>
+                        {isVerified && <BadgeCheck className="h-4 w-4 shrink-0 text-[#2F7A3A]" aria-label="Verified" />}
+                      </p>
                       <p className="truncate text-xs font-medium text-[#5E7A5E]">{user.role}</p>
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setShowPrivacy(true);
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    <Lock className="h-3.5 w-3.5" />
+                    <span>Privacy</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -1844,6 +2189,51 @@ export default function GeekArchiveApp() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
+        {user && !isVerified && (
+          <div
+            role="status"
+            className={`mb-5 flex flex-col gap-3 rounded-2xl border px-5 py-4 sm:flex-row sm:items-center sm:justify-between ${
+              myVerification?.status === "pending"
+                ? "border-[#E8D9B5] bg-[#FBF5E6]"
+                : myVerification?.status === "rejected"
+                ? "border-[#E7C3BC] bg-[#FBEDEA]"
+                : "border-[#C8DD9F] bg-[#F4F9EC]"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#3F5D3F]" />
+              <div>
+                <p className="text-sm font-bold text-[#163126]">
+                  {myVerification?.status === "pending"
+                    ? "Your verification is being reviewed"
+                    : myVerification?.status === "rejected"
+                    ? "Your verification wasn't approved"
+                    : "Verify your account"}
+                </p>
+                <p className="text-xs text-[#3E4F46]">
+                  {myVerification?.status === "pending"
+                    ? "You can set things up meanwhile; full access opens once you're approved."
+                    : isYouth
+                    ? "Verified students and developers can post projects that organisations can discover."
+                    : "Verified organisations can discover student projects, view profiles and contact students."}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowVerify(true)}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2 text-sm font-semibold text-[#C8DD9F]"
+            >
+              <BadgeCheck className="h-4 w-4" />
+              {myVerification?.status === "pending" ? "View request" : myVerification?.status === "rejected" ? "Update details" : "Verify now"}
+            </button>
+          </div>
+        )}
+
+        {activeTab === "verifications" && isAdmin && (
+          <AdminVerifications requests={adminRequestList} onReview={handleReviewVerification} />
+        )}
+
         {(projectsLoading || projectsLoadError) && (
           <p
             role={projectsLoadError ? "alert" : "status"}
@@ -2112,7 +2502,16 @@ export default function GeekArchiveApp() {
           </div>
         )}
 
-        {activeTab === "discover" && !isYouth && (
+        {activeTab === "discover" && !isYouth && !isVerified && (
+          <VerifyGate
+            title="Verify your organisation to discover student projects"
+            text="To protect students, only verified SMMEs, NGOs and sponsors can see their projects and profiles, contact them, or run AI analyses."
+            status={myVerification?.status}
+            onVerify={() => setShowVerify(true)}
+          />
+        )}
+
+        {activeTab === "discover" && !isYouth && isVerified && (
           <section className="space-y-4">
             <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2553,7 +2952,17 @@ export default function GeekArchiveApp() {
 
         {activeTab === "myprojects" && isYouth && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            {projectForm}
+            {isVerified ? (
+              projectForm
+            ) : (
+              <VerifyGate
+                className="lg:col-span-5"
+                title="Verify your account to post projects"
+                text="Organisations only see work from verified students and developers. It takes a minute."
+                status={myVerification?.status}
+                onVerify={() => setShowVerify(true)}
+              />
+            )}
 
             <section className="space-y-4 lg:col-span-7">
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
@@ -3346,13 +3755,57 @@ export default function GeekArchiveApp() {
               </div>
             </div>
           )}
-          {!isYouth && (
+          {!isYouth && isVerified && (
             <div className="mt-6">
               <AiAnalysisPanel project={openProject} />
             </div>
           )}
+          {!isYouth && !isVerified && (
+            <p className="mt-6 rounded-xl border border-[#E8D9B5] bg-[#FBF5E6] px-4 py-3 text-xs text-[#6B5320]">
+              Verify your organisation to run an AI analysis of this project.
+            </p>
+          )}
         </Modal>
       )}
+
+      {user && (
+        <Modal
+          open={showVerify}
+          onClose={() => setShowVerify(false)}
+          title="Verify your account"
+          subtitle={isYouth ? "Students, developers and IT professionals" : "SMMEs, NGOs and sponsors"}
+          size="lg"
+        >
+          <VerificationCenter
+            key={`${user.id}-${myVerification?.status || "none"}`}
+            user={user}
+            group={isYouth ? "youth" : "organization"}
+            verification={myVerification}
+            supabaseMode={Boolean(supabase)}
+            onSubmit={handleSubmitVerification}
+            onLinkGitHub={handleLinkGitHub}
+          />
+        </Modal>
+      )}
+
+      {user && (
+        <Modal open={showPrivacy} onClose={() => setShowPrivacy(false)} title="Privacy & my data" subtitle="Your rights under POPIA" size="lg">
+          <PrivacyCenter
+            user={{ ...user, isYouth }}
+            consentAt={consentAt}
+            summary={privacySummary}
+            buildExport={buildMyDataExport}
+            onDeleteAccount={handleDeleteAccount}
+          />
+        </Modal>
+      )}
+
+      <ConsentGate
+        open={needsConsent}
+        userName={user?.name || ""}
+        onAgree={handleConsent}
+        onSignOut={handleSignOut}
+      />
 
       {viewedProfile && (
         <Modal
