@@ -38,6 +38,11 @@ const uniqueList = (value) => {
     });
 };
 
+// Demo mode has no real accounts, so a user is identified by their name.
+const demoUserId = (name) => `demo:${String(name || "").trim().toLowerCase()}`;
+
+const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
+
 // "thandi.mokoena@example.co.za" -> "Thandi Mokoena"
 const nameFromEmail = (email) =>
   email && email.includes("@")
@@ -209,13 +214,19 @@ export default function GeekArchiveApp() {
   const [user, setUser] = useState(
     isSupabaseConfigured
       ? null
-      : { name: "Naledi Khumalo", role: "Youth Pod Talent", provider: "Demo" }
+      : {
+          id: demoUserId("Naledi Khumalo"),
+          name: "Naledi Khumalo",
+          role: "Youth Pod Talent",
+          provider: "Demo",
+        }
   );
 
   const [activeTab, setActiveTab] = useState("talent");
   const [prototypes, setPrototypes] = useState(INITIAL_PROTOTYPES);
   const [pods, setPods] = useState(SAMPLE_PODS);
   const [archiveQuery, setArchiveQuery] = useState("");
+  const [discoverQuery, setDiscoverQuery] = useState("");
   const [talentProfiles, setTalentProfiles] = useState([]);
   const [newTalent, setNewTalent] = useState({
     name: "Naledi Khumalo",
@@ -234,11 +245,13 @@ export default function GeekArchiveApp() {
     ? [
         { id: "opportunities", label: "Matched opportunities" },
         { id: "talent", label: "My profile" },
+        { id: "myprojects", label: "My projects" },
         { id: "pods", label: "My pods" },
         { id: "career", label: "Career proof" },
       ]
     : [
         { id: "match", label: "Describe a need" },
+        { id: "discover", label: "Discover projects" },
         { id: "archive", label: "Browse projects" },
         { id: "pods", label: "Pod workspace" },
       ];
@@ -303,7 +316,7 @@ export default function GeekArchiveApp() {
         authUser.user_metadata?.full_name ||
         nameFromEmail(authUser.email) ||
         "Member";
-      setUser({ name, role, provider: authUser.app_metadata?.provider || "email" });
+      setUser({ id: authUser.id, name, role, provider: authUser.app_metadata?.provider || "email" });
       setNewTalent((current) => ({ ...current, name }));
       setActiveTab(role === "Youth Pod Talent" ? "talent" : "match");
       setShowAuthLanding(false);
@@ -378,6 +391,7 @@ export default function GeekArchiveApp() {
       : nameFromEmail(authEmail) || "Tshepo Molefe";
 
     setUser({
+      id: demoUserId(derivedName),
       name: derivedName,
       role: authRole,
       provider: providerLabel,
@@ -398,7 +412,12 @@ export default function GeekArchiveApp() {
   const handleExplorePlatform = () => {
     const role = authRole;
     const name = user?.name || "Preview User";
-    setUser((current) => ({ name, role, provider: current?.provider || "Preview" }));
+    setUser((current) => ({
+      id: current?.id || demoUserId(name),
+      name,
+      role,
+      provider: current?.provider || "Preview",
+    }));
     setNewTalent((current) => ({ ...current, name }));
     setActiveTab(role === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
@@ -481,7 +500,8 @@ export default function GeekArchiveApp() {
 
   const handleIngestPrototype = (e) => {
     e.preventDefault();
-    if (!newRepoTitle.trim()) return;
+    // SMMEs/NGOs only view projects; posting is for youth talent.
+    if (!isYouth || !newRepoTitle.trim()) return;
     const created = {
       id: `proto-${Date.now()}`,
       title: newRepoTitle.trim(),
@@ -493,14 +513,21 @@ export default function GeekArchiveApp() {
       missing: [],
       estimatedValue: null,
       domain: auditNote.trim(),
+      ownerId: user?.id,
+      ownerName: user?.name,
+      ownerRole: user?.role,
+      postedAt: new Date().toISOString(),
     };
+    // Only youth talent post projects, and they can only update their own.
+    const canEdit = (project) => project.ownerId === user?.id;
     setPrototypes((prev) => {
       const existing = prev.findIndex(
         (project) =>
-          project.title.toLowerCase() === created.title.toLowerCase() ||
-          (project.aliases || []).some(
-            (alias) => alias.toLowerCase() === created.title.toLowerCase()
-          )
+          canEdit(project) &&
+          (project.title.toLowerCase() === created.title.toLowerCase() ||
+            (project.aliases || []).some(
+              (alias) => alias.toLowerCase() === created.title.toLowerCase()
+            ))
       );
       if (existing < 0) return [created, ...prev];
       return prev.map((project, index) =>
@@ -521,7 +548,7 @@ export default function GeekArchiveApp() {
     setNewRepoDescription("");
     setNewRepoStack("");
     setAuditNote("");
-    setActiveTab("archive");
+    setActiveTab("myprojects");
   };
 
   const handleAddTalent = (e) => {
@@ -590,6 +617,96 @@ export default function GeekArchiveApp() {
       .toLowerCase();
     return searchable.includes(archiveQuery.trim().toLowerCase());
   });
+
+  // Who sees what:
+  // - Youth only ever see the projects they posted themselves (never another developer's).
+  // - Organizations/sponsors can discover every project posted by youth talent.
+  const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
+  const youthPostedProjects = prototypes.filter((proto) => proto.ownerRole === "Youth Pod Talent");
+  const discoveredProjects = youthPostedProjects.filter((proto) =>
+    [proto.title, proto.domain, proto.summary, proto.description, proto.ownerName, ...proto.stack]
+      .join(" ")
+      .toLowerCase()
+      .includes(discoverQuery.trim().toLowerCase())
+  );
+  const talentRoleFor = (ownerName) =>
+    talentProfiles.find((profile) => profile.name.toLowerCase() === String(ownerName).toLowerCase())
+      ?.role;
+
+  const projectForm = (
+    <form
+      onSubmit={handleIngestPrototype}
+      className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5"
+    >
+      <div className="flex items-center gap-2">
+        <Layers className="h-5 w-5 text-[#5E7A5E]" />
+        <h2 className="text-lg font-bold text-[#2C1A10]">Post a project</h2>
+      </div>
+      <p className="text-xs text-[#6E5A4F]">
+        Share something you built. SMMEs, NGOs and sponsors can discover it; other students and
+        developers cannot see it. To update it, post it again with the same name.
+      </p>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project name</label>
+        <input
+          type="text"
+          required
+          value={newRepoTitle}
+          onChange={(e) => setNewRepoTitle(e.target.value)}
+          placeholder="e.g., Imbewu Learn"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project or repository link</label>
+        <input
+          type="text"
+          value={newRepoUrl}
+          onChange={(e) => setNewRepoUrl(e.target.value)}
+          placeholder="https://..."
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">
+          Project description
+        </label>
+        <textarea
+          rows={4}
+          value={newRepoDescription}
+          onChange={(e) => setNewRepoDescription(e.target.value)}
+          placeholder="What does it do, and who is it for?"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3.5 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Tech Stack</label>
+        <input
+          type="text"
+          value={newRepoStack}
+          onChange={(e) => setNewRepoStack(e.target.value)}
+          placeholder="Separate tools with commas"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Target Sector</label>
+        <input
+          type="text"
+          value={auditNote}
+          onChange={(e) => setAuditNote(e.target.value)}
+          placeholder="Add when known"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+      </div>
+      <button
+        type="submit"
+        className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
+      >
+        Post my project
+      </button>
+    </form>
+  );
 
   if (showAuthLanding) {
     return (
@@ -1127,81 +1244,167 @@ export default function GeekArchiveApp() {
           </div>
         )}
 
-        {activeTab === "archive" && !isYouth && (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            <form
-              onSubmit={handleIngestPrototype}
-              className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5"
-            >
-              <div className="flex items-center gap-2">
-                <Layers className="h-5 w-5 text-[#5E7A5E]" />
-                <h2 className="text-lg font-bold text-[#2C1A10]">Add a project</h2>
-              </div>
-              <p className="text-xs text-[#6E5A4F]">
-                Add a project name first. To update an existing project, enter its name again with a description, link, stack, or sector.
-              </p>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project name</label>
-                <input
-                  type="text"
-                  required
-                  value={newRepoTitle}
-                  onChange={(e) => setNewRepoTitle(e.target.value)}
-                  placeholder="e.g., Imbewu Learn"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project or repository link</label>
-                <input
-                  type="text"
-                  value={newRepoUrl}
-                  onChange={(e) => setNewRepoUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">
-                  Project description
+        {activeTab === "discover" && !isYouth && (
+          <section className="space-y-4">
+            <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-[#2C1A10]">Discover projects by students &amp; developers</h2>
+                  <p className="mt-1 text-xs text-[#6E5A4F]">
+                    Projects posted by youth talent. Only SMMEs, NGOs and sponsors can see this list.
+                  </p>
+                </div>
+                <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
+                  {youthPostedProjects.length} posted
+                </span>
+                <label className="relative w-full">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7C8B80]" />
+                  <input
+                    type="search"
+                    value={discoverQuery}
+                    onChange={(e) => setDiscoverQuery(e.target.value)}
+                    placeholder="Search by project, skill, sector or person"
+                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] py-2.5 pl-9 pr-3 text-sm sm:max-w-sm"
+                  />
                 </label>
-                <textarea
-                  rows={4}
-                  value={newRepoDescription}
-                  onChange={(e) => setNewRepoDescription(e.target.value)}
-                  placeholder="What does it do, and who is it for?"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3.5 text-sm"
-                />
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Tech Stack</label>
-                <input
-                  type="text"
-                  value={newRepoStack}
-                  onChange={(e) => setNewRepoStack(e.target.value)}
-                  placeholder="Separate tools with commas"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-[#3B2314] mb-1">Target Sector</label>
-                <input
-                  type="text"
-                  value={auditNote}
-                  onChange={(e) => setAuditNote(e.target.value)}
-                  placeholder="Add when known"
-                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
-                />
-              </div>
-              <button
-                type="submit"
-                className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
-              >
-                Add project to archive
-              </button>
-            </form>
+            </div>
 
-            <div className="space-y-4 lg:col-span-7">
+            {discoveredProjects.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                <p className="font-semibold text-[#2C1A10]">
+                  {youthPostedProjects.length ? "No projects match your search" : "No student projects posted yet"}
+                </p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">
+                  {youthPostedProjects.length
+                    ? "Try a different skill, sector or name."
+                    : "When students and developers post their work, it will appear here."}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {discoveredProjects.map((proto) => (
+                  <article key={proto.id} className="flex flex-col rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                    {proto.domain && (
+                      <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                    )}
+                    <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                    <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-[#6E5A4F]">
+                      <Users className="h-3.5 w-3.5" />
+                      Posted by <span className="font-semibold text-[#3B2314]">{proto.ownerName}</span>
+                      {talentRoleFor(proto.ownerName) && <span>· {talentRoleFor(proto.ownerName)}</span>}
+                      {proto.postedAt && (
+                        <span>· {new Date(proto.postedAt).toLocaleDateString()}</span>
+                      )}
+                    </p>
+                    {proto.summary && (
+                      <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
+                    )}
+                    {proto.description && proto.description !== proto.summary && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs font-semibold text-[#3F5D3F]">
+                          Read full description
+                        </summary>
+                        <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.description}</p>
+                      </details>
+                    )}
+                    {proto.stack.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {proto.stack.map((tech) => (
+                          <span
+                            key={tech}
+                            className="rounded-md bg-[#EEF4EE] px-2.5 py-0.5 text-xs font-medium text-[#3F5D3F]"
+                          >
+                            {tech}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {isHttpUrl(proto.repo) && (
+                      <a
+                        href={proto.repo}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-[#3F5D3F] hover:underline"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        View project
+                      </a>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "myprojects" && isYouth && (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {projectForm}
+
+            <section className="space-y-4 lg:col-span-7">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                <div>
+                  <h2 className="text-lg font-bold text-[#2C1A10]">My projects</h2>
+                  <p className="mt-1 inline-flex items-center gap-1 text-xs text-[#6E5A4F]">
+                    <ShieldCheck className="h-3.5 w-3.5 text-[#5E7A5E]" />
+                    Visible to you and to SMMEs, NGOs and sponsors only.
+                  </p>
+                </div>
+                <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
+                  {myProjects.length} posted
+                </span>
+              </div>
+
+              {myProjects.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                  <p className="font-semibold text-[#2C1A10]">You haven&apos;t posted a project yet</p>
+                  <p className="mt-1 text-sm text-[#6E5A4F]">
+                    Post something you built so organizations and sponsors can discover it.
+                  </p>
+                </div>
+              ) : (
+                myProjects.map((proto) => (
+                  <article key={proto.id} className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                    {proto.domain && (
+                      <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                    )}
+                    <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                    {proto.summary && (
+                      <p className="mt-1 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
+                    )}
+                    {proto.stack.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {proto.stack.map((tech) => (
+                          <span
+                            key={tech}
+                            className="rounded-md bg-[#EEF4EE] px-2.5 py-0.5 text-xs font-medium text-[#3F5D3F]"
+                          >
+                            {tech}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {isHttpUrl(proto.repo) && (
+                      <a
+                        href={proto.repo}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[#3F5D3F] hover:underline"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        {proto.repo}
+                      </a>
+                    )}
+                  </article>
+                ))
+              )}
+            </section>
+          </div>
+        )}
+
+        {activeTab === "archive" && !isYouth && (
+            <div className="space-y-4">
               <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1233,6 +1436,11 @@ export default function GeekArchiveApp() {
                         <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
                       )}
                       <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                      {proto.ownerRole === "Youth Pod Talent" && (
+                        <p className="text-xs text-[#6E5A4F]">
+                          Posted by <span className="font-semibold">{proto.ownerName}</span> (student / developer)
+                        </p>
+                      )}
                       {proto.summary && (
                         <p className="mt-1 max-w-2xl text-sm leading-relaxed text-[#5C493E]">
                           {proto.summary}
@@ -1276,11 +1484,10 @@ export default function GeekArchiveApp() {
               {visiblePrototypes.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
                   <p className="font-semibold text-[#2C1A10]">No projects found</p>
-                  <p className="mt-1 text-sm text-[#6E5A4F]">Try a different project name or add it to the archive.</p>
+                  <p className="mt-1 text-sm text-[#6E5A4F]">Try a different project name, technology or sector.</p>
                 </div>
               )}
             </div>
-          </div>
         )}
 
         {activeTab === "talent" && isYouth && (

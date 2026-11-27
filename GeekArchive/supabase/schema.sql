@@ -40,7 +40,10 @@ alter table public.prototypes add column if not exists is_illustrative boolean n
 alter table public.prototypes add column if not exists included_tailoring text[] not null default '{}';
 alter table public.prototypes add column if not exists active boolean not null default true;
 alter table public.prototypes add column if not exists created_by uuid references public.profiles(id) on delete set null;
+alter table public.prototypes add column if not exists owner_display_name text;
+alter table public.prototypes add column if not exists owner_role text;
 alter table public.prototypes alter column completion_pct drop default;
+create index if not exists prototypes_created_by_idx on public.prototypes(created_by);
 create unique index if not exists prototypes_slug_key on public.prototypes(slug);
 create index if not exists prototypes_active_idx on public.prototypes(active);
 
@@ -280,6 +283,39 @@ begin
 end;
 $$;
 
+-- Stamps every new project with its real owner so nobody can post as someone else,
+-- and stores the poster's name/role so sponsors can see who posted it.
+create or replace function public.stamp_prototype_owner()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if tg_op = 'UPDATE' then
+    -- Ownership and the "posted by" details can never be changed after posting.
+    new.created_by := old.created_by;
+    new.owner_display_name := old.owner_display_name;
+    new.owner_role := old.owner_role;
+    return new;
+  end if;
+
+  if auth.uid() is not null then
+    new.created_by := auth.uid();
+    select p.display_name, p.role
+      into new.owner_display_name, new.owner_role
+      from public.profiles p
+     where p.id = auth.uid();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists stamp_prototype_owner on public.prototypes;
+create trigger stamp_prototype_owner
+  before insert or update on public.prototypes
+  for each row execute procedure public.stamp_prototype_owner();
+
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
@@ -309,35 +345,46 @@ create policy profiles_update_self on public.profiles
   using (id = auth.uid())
   with check (id = auth.uid());
 
+-- Organizations/sponsors (and admins) can discover every active project, including
+-- projects posted by youth. Youth can only see projects they posted themselves or
+-- projects they were assigned to through a pod -- never another developer's posts.
 drop policy if exists prototypes_read_role_scoped on public.prototypes;
 create policy prototypes_read_role_scoped on public.prototypes
   for select to authenticated
   using (
-    active
-    and (
-      public.get_current_profile_role() in ('organization', 'admin')
-      or public.has_assigned_prototype(prototypes.id, auth.uid())
+    created_by = auth.uid()
+    or (
+      active
+      and (
+        public.get_current_profile_role() in ('organization', 'admin')
+        or public.has_assigned_prototype(prototypes.id, auth.uid())
+      )
     )
   );
 
+-- Only youth talent (and admins) post projects. SMMEs/NGOs only view what is already
+-- in the database. Ownership is forced by stamp_prototype_owner.
 drop policy if exists prototypes_insert_organization on public.prototypes;
-create policy prototypes_insert_organization on public.prototypes
+drop policy if exists prototypes_insert_owner on public.prototypes;
+create policy prototypes_insert_owner on public.prototypes
   for insert to authenticated
   with check (
-    public.get_current_profile_role() in ('organization', 'admin')
+    public.get_current_profile_role() in ('youth', 'admin')
     and created_by = auth.uid()
   );
 
+-- Only the youth member who posted a project (or an admin) can change or delete it.
+-- SMMEs/NGOs have read-only access to projects.
 drop policy if exists prototypes_update_owner on public.prototypes;
 create policy prototypes_update_owner on public.prototypes
   for update to authenticated
   using (
     public.get_current_profile_role() = 'admin'
-    or (public.get_current_profile_role() = 'organization' and created_by = auth.uid())
+    or (public.get_current_profile_role() = 'youth' and created_by = auth.uid())
   )
   with check (
     public.get_current_profile_role() = 'admin'
-    or (public.get_current_profile_role() = 'organization' and created_by = auth.uid())
+    or (public.get_current_profile_role() = 'youth' and created_by = auth.uid())
   );
 
 drop policy if exists prototypes_delete_owner on public.prototypes;
@@ -345,7 +392,7 @@ create policy prototypes_delete_owner on public.prototypes
   for delete to authenticated
   using (
     public.get_current_profile_role() = 'admin'
-    or (public.get_current_profile_role() = 'organization' and created_by = auth.uid())
+    or (public.get_current_profile_role() = 'youth' and created_by = auth.uid())
   );
 
 drop policy if exists problem_briefs_read_owner on public.problem_briefs;
