@@ -37,6 +37,7 @@ import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
 import Modal from "./Modal";
 import StudentProfile from "./StudentProfile";
+import AiAnalysisPanel from "./AiAnalysisPanel";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -3321,9 +3322,9 @@ export default function GeekArchiveApp() {
           {openProject.demoVideo ? (
             <VideoPlayer project={openProject} autoplay />
           ) : (
-            <div className="flex aspect-[3/1] w-full items-center justify-center rounded-2xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] text-xs text-[#6E5A4F]">
-              No demo video yet
-            </div>
+            <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] px-4 py-3 text-xs text-[#6E5A4F]">
+              No demo video yet — you can ask the student for one when you get in touch.
+            </p>
           )}
           {openProject.summary && (
             <p className="mt-5 text-base font-medium leading-relaxed text-[#2C1A10]">{openProject.summary}</p>
@@ -3343,6 +3344,11 @@ export default function GeekArchiveApp() {
                   </span>
                 ))}
               </div>
+            </div>
+          )}
+          {!isYouth && (
+            <div className="mt-6">
+              <AiAnalysisPanel project={openProject} />
             </div>
           )}
         </Modal>
