@@ -42,6 +42,11 @@ alter table public.prototypes add column if not exists active boolean not null d
 alter table public.prototypes add column if not exists created_by uuid references public.profiles(id) on delete set null;
 alter table public.prototypes add column if not exists owner_display_name text;
 alter table public.prototypes add column if not exists owner_role text;
+alter table public.prototypes add column if not exists demo_video_url text;
+-- Links shown to organizations must be https (GitHub repos and video players).
+alter table public.prototypes drop constraint if exists prototypes_demo_video_https;
+alter table public.prototypes add constraint prototypes_demo_video_https
+  check (demo_video_url is null or demo_video_url ~* '^https://');
 alter table public.prototypes alter column completion_pct drop default;
 create index if not exists prototypes_created_by_idx on public.prototypes(created_by);
 create unique index if not exists prototypes_slug_key on public.prototypes(slug);

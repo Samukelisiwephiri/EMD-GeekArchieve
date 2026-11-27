@@ -24,6 +24,8 @@ import {
   X,
   Pencil,
   Trash2,
+  Github,
+  PlayCircle,
   Mail,
   MessageSquare,
   Send,
@@ -31,6 +33,9 @@ import {
   Inbox,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
+import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
+import Modal from "./Modal";
+import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
 // Comma-separated input -> trimmed list without blanks or case-insensitive duplicates.
@@ -51,7 +56,7 @@ const uniqueList = (value) => {
 // The embedding column is left out on purpose: it is large and the UI does not use it.
 const PROTOTYPE_COLUMNS =
   "id, title, aliases, summary, description, repo_url, tech_stack, completion_pct, " +
-  "missing_modules, domain, suggested_price, is_illustrative, included_tailoring, " +
+  "missing_modules, domain, demo_video_url, suggested_price, is_illustrative, included_tailoring, " +
   "created_by, owner_display_name, owner_role, created_at";
 
 const ROLE_LABELS = { youth: "Youth Pod Talent", organization: "SMME / NGO", admin: "SMME / NGO" };
@@ -63,6 +68,7 @@ const fromPrototypeRow = (row) => ({
   summary: row.summary || "",
   description: row.description || "",
   repo: row.repo_url || "",
+  demoVideo: row.demo_video_url || "",
   stack: row.tech_stack || [],
   completion: row.completion_pct,
   missing: row.missing_modules || [],
@@ -83,6 +89,7 @@ const toPrototypeRow = (project) => ({
   summary: project.summary || "",
   description: project.description || "",
   repo_url: project.repo || null,
+  demo_video_url: project.demoVideo || null,
   tech_stack: project.stack || [],
   domain: project.domain || null,
 });
@@ -148,7 +155,6 @@ const initialsOf = (name) =>
     .join("")
     .toUpperCase() || "?";
 
-const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
 
 // "thandi.mokoena@example.co.za" -> "Thandi Mokoena"
 const nameFromEmail = (email) =>
@@ -378,6 +384,8 @@ export default function GeekArchiveApp() {
   // Contact requests from SMMEs/NGOs to students (one per organization per project).
   const [contactRequests, setContactRequests] = useState([]);
   const [contactFormProjectId, setContactFormProjectId] = useState(null);
+  // The project an SMME/NGO has opened (its demo video autoplays).
+  const [openProjectId, setOpenProjectId] = useState(null);
   const [contactDraft, setContactDraft] = useState({ message: "", email: "", phone: "" });
   const [contactSending, setContactSending] = useState(false);
   const [contactError, setContactError] = useState("");
@@ -434,6 +442,7 @@ export default function GeekArchiveApp() {
 
   const [newRepoTitle, setNewRepoTitle] = useState("");
   const [newRepoUrl, setNewRepoUrl] = useState("");
+  const [newRepoVideo, setNewRepoVideo] = useState("");
   const [newRepoDescription, setNewRepoDescription] = useState("");
   const [newRepoStack, setNewRepoStack] = useState("");
   const [auditNote, setAuditNote] = useState("");
@@ -682,6 +691,7 @@ export default function GeekArchiveApp() {
     setEditingTalent(false);
     setTalentError("");
     setConfirmDeleteTalent(false);
+    setOpenProjectId(null);
     clearProjectForm();
     setConfirmDeleteId(null);
     closeContactForm();
@@ -791,7 +801,8 @@ export default function GeekArchiveApp() {
       title: newRepoTitle.trim(),
       summary: newRepoDescription.trim().split(/[.!?]/)[0] || "",
       description: newRepoDescription.trim(),
-      repo: newRepoUrl.trim(),
+      repo: parseGitHubRepo(newRepoUrl)?.url || newRepoUrl.trim(),
+      demoVideo: newRepoVideo.trim(),
       stack: uniqueList(newRepoStack),
       completion: null,
       missing: [],
@@ -802,6 +813,14 @@ export default function GeekArchiveApp() {
       ownerRole: user?.role,
       postedAt: new Date().toISOString(),
     };
+    if (created.repo && !parseGitHubRepo(created.repo)) {
+      setProjectError("The GitHub link should look like https://github.com/your-name/your-repo");
+      return;
+    }
+    if (created.demoVideo && !toVideoEmbed(created.demoVideo)) {
+      setProjectError(`That demo video link can't be played. Use ${SUPPORTED_VIDEO_HINT}.`);
+      return;
+    }
     const titleKey = created.title.toLowerCase();
     const isOwnProject = (project) => project.ownerId === user?.id;
     const hasName = (project) =>
@@ -829,6 +848,7 @@ export default function GeekArchiveApp() {
         summary: created.summary,
         description: created.description,
         repo: created.repo,
+        demoVideo: created.demoVideo,
         stack: created.stack,
         domain: created.domain,
       };
@@ -839,6 +859,7 @@ export default function GeekArchiveApp() {
         summary: created.summary || existing.summary,
         description: created.description || existing.description,
         repo: created.repo || existing.repo,
+        demoVideo: created.demoVideo || existing.demoVideo,
         stack: created.stack.length ? created.stack : existing.stack,
         domain: created.domain || existing.domain,
       };
@@ -893,6 +914,7 @@ export default function GeekArchiveApp() {
   const clearProjectForm = () => {
     setNewRepoTitle("");
     setNewRepoUrl("");
+    setNewRepoVideo("");
     setNewRepoDescription("");
     setNewRepoStack("");
     setAuditNote("");
@@ -913,6 +935,7 @@ export default function GeekArchiveApp() {
     setProjectError("");
     setNewRepoTitle(project.title);
     setNewRepoUrl(project.repo || "");
+    setNewRepoVideo(project.demoVideo || "");
     setNewRepoDescription(project.description || "");
     setNewRepoStack((project.stack || []).join(", "));
     setAuditNote(project.domain || "");
@@ -1248,6 +1271,7 @@ export default function GeekArchiveApp() {
   // Who sees what:
   // - Youth only ever see the projects they posted themselves (never another developer's).
   // - Organizations/sponsors can discover every project posted by youth talent.
+  const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
   const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
   const youthPostedProjects = prototypes.filter((proto) => proto.ownerRole === "Youth Pod Talent");
   // Filter options come from what students actually posted. Matching ignores case,
@@ -1317,14 +1341,38 @@ export default function GeekArchiveApp() {
         />
       </div>
       <div>
-        <label className="block text-xs font-semibold text-[#3B2314] mb-1">Project or repository link</label>
+        <label htmlFor="project-github" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[#3B2314]">
+          <Github className="h-3.5 w-3.5" />
+          GitHub repository
+        </label>
         <input
-          type="text"
+          id="project-github"
+          type="url"
+          inputMode="url"
           value={newRepoUrl}
           onChange={(e) => setNewRepoUrl(e.target.value)}
-          placeholder="https://..."
+          placeholder="https://github.com/your-name/your-repo"
           className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
         />
+        <p className="mt-1 text-[11px] text-[#8A786D]">
+          SMMEs can open it, and Geek Archive's AI reads it to explain your project to them.
+        </p>
+      </div>
+      <div>
+        <label htmlFor="project-video" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[#3B2314]">
+          <PlayCircle className="h-3.5 w-3.5" />
+          Demo video <span className="font-normal text-[#8A786D]">(optional)</span>
+        </label>
+        <input
+          id="project-video"
+          type="url"
+          inputMode="url"
+          value={newRepoVideo}
+          onChange={(e) => setNewRepoVideo(e.target.value)}
+          placeholder="https://youtu.be/…"
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        />
+        <p className="mt-1 text-[11px] text-[#8A786D]">{SUPPORTED_VIDEO_HINT}. Plays inside Geek Archive.</p>
       </div>
       <div>
         <label className="block text-xs font-semibold text-[#3B2314] mb-1">
@@ -1949,11 +1997,9 @@ export default function GeekArchiveApp() {
                       {matchedResult.prototype.summary}
                     </p>
                   )}
-                  {matchedResult.prototype.repo && (
-                    <p className="mt-1 text-xs text-[#6E5A4F]">
-                      Project link: {matchedResult.prototype.repo}
-                    </p>
-                  )}
+                  <div className="mt-3">
+                    <ProjectLinks project={matchedResult.prototype} compact />
+                  </div>
                   {matchedResult.prototype.description && (
                     <details className="mt-3">
                       <summary className="cursor-pointer text-xs font-semibold text-[#3F5D3F]">
@@ -2127,10 +2173,19 @@ export default function GeekArchiveApp() {
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {discoveredProjects.map((proto) => (
                   <article key={proto.id} className="flex flex-col rounded-2xl border border-[#E6DFD5] bg-white p-5">
+                    <VideoPreview project={proto} onOpen={() => setOpenProjectId(proto.id)} />
                     {proto.domain && (
                       <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
                     )}
-                    <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                    <h3 className="text-base font-bold text-[#2C1A10]">
+                      <button
+                        type="button"
+                        onClick={() => setOpenProjectId(proto.id)}
+                        className="text-left hover:text-[#3F5D3F] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8DD9F]"
+                      >
+                        {proto.title}
+                      </button>
+                    </h3>
                     <p className="mt-1 inline-flex items-center gap-1.5 text-xs text-[#6E5A4F]">
                       <Users className="h-3.5 w-3.5" />
                       Posted by <span className="font-semibold text-[#3B2314]">{proto.ownerName}</span>
@@ -2173,17 +2228,9 @@ export default function GeekArchiveApp() {
                         })}
                       </div>
                     )}
-                    {isHttpUrl(proto.repo) && (
-                      <a
-                        href={proto.repo}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-[#3F5D3F] hover:underline"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        View project
-                      </a>
-                    )}
+                    <div className="mt-4">
+                      <ProjectLinks project={proto} onOpen={() => setOpenProjectId(proto.id)} />
+                    </div>
 
                     <div className="mt-4 border-t border-[#EEE8E1] pt-4">
                       {(() => {
@@ -2564,16 +2611,13 @@ export default function GeekArchiveApp() {
                         ))}
                       </div>
                     )}
-                    {isHttpUrl(proto.repo) && (
-                      <a
-                        href={proto.repo}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[#3F5D3F] hover:underline"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        {proto.repo}
-                      </a>
+                    <div className="mt-3">
+                      <ProjectLinks project={proto} compact />
+                    </div>
+                    {!proto.repo && !proto.demoVideo && (
+                      <p className="mt-3 text-[11px] text-[#8A786D]">
+                        Tip: add a GitHub repo and demo video so organizations can see your work in action.
+                      </p>
                     )}
                   </article>
                 ))
@@ -2614,7 +2658,15 @@ export default function GeekArchiveApp() {
                       {proto.domain && (
                         <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
                       )}
-                      <h3 className="text-base font-bold text-[#2C1A10]">{proto.title}</h3>
+                      <h3 className="text-base font-bold text-[#2C1A10]">
+                        <button
+                          type="button"
+                          onClick={() => setOpenProjectId(proto.id)}
+                          className="text-left hover:text-[#3F5D3F] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8DD9F]"
+                        >
+                          {proto.title}
+                        </button>
+                      </h3>
                       {proto.ownerRole === "Youth Pod Talent" && (
                         <p className="text-xs text-[#6E5A4F]">
                           Posted by <span className="font-semibold">{proto.ownerName}</span> (student / developer)
@@ -2625,7 +2677,7 @@ export default function GeekArchiveApp() {
                           {proto.summary}
                         </p>
                       )}
-                      {proto.repo && <p className="text-xs text-[#6E5A4F]">{proto.repo}</p>}
+
                     </div>
                     <span className="rounded-full bg-[#FAF8F5] border border-[#E6DFD5] px-3 py-1 text-xs font-bold text-[#3B2314]">
                       {proto.completion == null
@@ -2652,6 +2704,9 @@ export default function GeekArchiveApp() {
                         {tech}
                       </span>
                     ))}
+                  </div>
+                  <div className="mt-3">
+                    <ProjectLinks project={proto} compact onOpen={() => setOpenProjectId(proto.id)} />
                   </div>
                   {proto.missing.length > 0 && (
                     <p className="mt-3 text-xs text-[#5C493E]">
@@ -3156,6 +3211,82 @@ export default function GeekArchiveApp() {
           </div>
         )}
       </main>
+
+      {openProject && (
+        <Modal
+          open
+          onClose={() => setOpenProjectId(null)}
+          title={openProject.title}
+          subtitle={[
+            openProject.ownerName && `Posted by ${openProject.ownerName}`,
+            openProject.domain,
+            openProject.postedAt && new Date(openProject.postedAt).toLocaleDateString(),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          size="xl"
+          footer={
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {parseGitHubRepo(openProject.repo) ? (
+                <a
+                  href={parseGitHubRepo(openProject.repo).url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#163126] hover:bg-[#FAF8F5]"
+                >
+                  <Github className="h-3.5 w-3.5" />
+                  Open on GitHub
+                </a>
+              ) : (
+                <span className="text-xs text-[#8A786D]">No GitHub repository added yet.</span>
+              )}
+              {!isYouth && openProject.ownerRole === "Youth Pod Talent" && !sentRequestFor(openProject.id) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const project = openProject;
+                    setOpenProjectId(null);
+                    setActiveTab("discover");
+                    openContactForm(project);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  Contact {openProject.ownerName?.split(" ")[0] || "student"}
+                </button>
+              )}
+            </div>
+          }
+        >
+          {openProject.demoVideo ? (
+            <VideoPlayer project={openProject} autoplay />
+          ) : (
+            <div className="flex aspect-[3/1] w-full items-center justify-center rounded-2xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] text-xs text-[#6E5A4F]">
+              No demo video yet
+            </div>
+          )}
+          {openProject.summary && (
+            <p className="mt-5 text-base font-medium leading-relaxed text-[#2C1A10]">{openProject.summary}</p>
+          )}
+          {openProject.description && openProject.description !== openProject.summary && (
+            <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-[#5C493E]">
+              {openProject.description}
+            </p>
+          )}
+          {openProject.stack.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Built with</p>
+              <div className="flex flex-wrap gap-1.5">
+                {openProject.stack.map((tech) => (
+                  <span key={tech} className="rounded-md bg-[#EEF4EE] px-2.5 py-1 text-xs font-medium text-[#3F5D3F]">
+                    {tech}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
