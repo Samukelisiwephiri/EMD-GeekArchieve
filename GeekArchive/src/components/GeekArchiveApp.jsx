@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Sparkles,
   Users,
@@ -22,6 +22,31 @@ import {
   MapPin,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
+import { supabase, isSupabaseConfigured } from "../lib/supabase";
+
+// Comma-separated input -> trimmed list without blanks or case-insensitive duplicates.
+const uniqueList = (value) => {
+  const seen = new Set();
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
+// "thandi.mokoena@example.co.za" -> "Thandi Mokoena"
+const nameFromEmail = (email) =>
+  email && email.includes("@")
+    ? email
+        .split("@")[0]
+        .replace(/[._-]+/g, " ")
+        .trim()
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+    : "";
 
 const INITIAL_PROTOTYPES = [
   {
@@ -178,11 +203,14 @@ export default function GeekArchiveApp() {
   const [authRole, setAuthRole] = useState("Youth Pod Talent");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [user, setUser] = useState({
-    name: "Naledi Khumalo",
-    role: "Youth Pod Talent",
-    provider: "GitHub",
-  });
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [user, setUser] = useState(
+    isSupabaseConfigured
+      ? null
+      : { name: "Naledi Khumalo", role: "Youth Pod Talent", provider: "Demo" }
+  );
 
   const [activeTab, setActiveTab] = useState("talent");
   const [prototypes, setPrototypes] = useState(INITIAL_PROTOTYPES);
@@ -248,19 +276,106 @@ export default function GeekArchiveApp() {
     (profile) => profile.name.toLowerCase() === user?.name.toLowerCase()
   );
 
-  const handleAuthSubmit = (e, providerLabel = "Email") => {
+  // Real accounts: when Supabase keys are set, restore the session and follow sign-in changes.
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+
+    const applySession = async (session) => {
+      if (cancelled) return;
+      if (!session) {
+        setUser(null);
+        setShowAuthLanding(true);
+        return;
+      }
+      const authUser = session.user;
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("display_name, role")
+        .eq("id", authUser.id)
+        .maybeSingle();
+      if (cancelled) return;
+      const storedRole = profile?.role || authUser.user_metadata?.role;
+      const role = ["organization", "admin"].includes(storedRole) ? "SMME / NGO" : "Youth Pod Talent";
+      const name =
+        profile?.display_name ||
+        authUser.user_metadata?.display_name ||
+        authUser.user_metadata?.full_name ||
+        nameFromEmail(authUser.email) ||
+        "Member";
+      setUser({ name, role, provider: authUser.app_metadata?.provider || "email" });
+      setNewTalent((current) => ({ ...current, name }));
+      setActiveTab(role === "Youth Pod Talent" ? "talent" : "match");
+      setShowAuthLanding(false);
+    };
+
+    supabase.auth.getSession().then(({ data }) => applySession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Deferred so Supabase isn't queried from inside its own auth callback.
+      setTimeout(() => applySession(session), 0);
+    });
+
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleAuthSubmit = async (e, providerLabel = "Email") => {
     if (e) e.preventDefault();
-    const derivedName =
-      authEmail && authEmail.includes("@")
-        ? authEmail
-            .split("@")[0]
-            .replace(/[._-]+/g, " ")
-            .replace(/\b\w/g, (c) => c.toUpperCase())
-        : providerLabel === "GitHub"
+    setAuthError("");
+    setAuthNotice("");
+    const isOAuth = providerLabel === "Google" || providerLabel === "GitHub";
+
+    if (supabase) {
+      setAuthLoading(true);
+      try {
+        if (isOAuth) {
+          const { error } = await supabase.auth.signInWithOAuth({
+            provider: providerLabel.toLowerCase(),
+            options: { redirectTo: window.location.origin },
+          });
+          if (error) throw error;
+          return; // The browser now redirects to the provider.
+        }
+        if (authMode === "signup") {
+          const { data, error } = await supabase.auth.signUp({
+            email: authEmail.trim(),
+            password: authPassword,
+            options: {
+              data: {
+                display_name: nameFromEmail(authEmail),
+                role: authRole === "SMME / NGO" ? "organization" : "youth",
+              },
+            },
+          });
+          if (error) throw error;
+          if (!data.session) {
+            setAuthNotice("Check your email to confirm your account, then sign in.");
+            setAuthMode("signin");
+          }
+        } else {
+          const { error } = await supabase.auth.signInWithPassword({
+            email: authEmail.trim(),
+            password: authPassword,
+          });
+          if (error) throw error;
+        }
+        setAuthPassword("");
+      } catch (err) {
+        setAuthError(err?.message || "Something went wrong. Please try again.");
+      } finally {
+        setAuthLoading(false);
+      }
+      return;
+    }
+
+    // Demo mode (no Supabase keys): nothing is verified, a local demo user is created.
+    const derivedName = isOAuth
+      ? providerLabel === "GitHub"
         ? "Kagiso Mokoena"
-        : providerLabel === "Google"
-        ? "Zinhle Ndlovu"
-        : "Tshepo Molefe";
+        : "Zinhle Ndlovu"
+      : nameFromEmail(authEmail) || "Tshepo Molefe";
 
     setUser({
       name: derivedName,
@@ -272,8 +387,10 @@ export default function GeekArchiveApp() {
     setShowAuthLanding(false);
   };
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    if (supabase) await supabase.auth.signOut();
     setUser(null);
+    setAuthPassword("");
     setAuthMode("signin");
     setShowAuthLanding(true);
   };
@@ -371,10 +488,7 @@ export default function GeekArchiveApp() {
       summary: newRepoDescription.trim().split(/[.!?]/)[0] || "",
       description: newRepoDescription.trim(),
       repo: newRepoUrl.trim(),
-      stack: newRepoStack
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
+      stack: uniqueList(newRepoStack),
       completion: null,
       missing: [],
       estimatedValue: null,
@@ -416,10 +530,7 @@ export default function GeekArchiveApp() {
       ...newTalent,
       name: newTalent.name.trim(),
       id: `talent-${Date.now()}`,
-      skills: newTalent.skills
-        .split(",")
-        .map((skill) => skill.trim())
-        .filter(Boolean),
+      skills: uniqueList(newTalent.skills),
     };
     setTalentProfiles((current) => {
       const existing = current.findIndex(
@@ -577,6 +688,23 @@ export default function GeekArchiveApp() {
                 Choose how you want to join pods, archive prototypes, or post an SMME/NGO brief.
               </p>
 
+              {!isSupabaseConfigured && (
+                <p className="mt-3 rounded-lg border border-[#E8D9B5] bg-[#FBF5E6] px-3 py-2 text-[11px] leading-relaxed text-[#6B5320]">
+                  <strong>Demo mode:</strong> accounts and passwords are not checked and nothing is saved.
+                  Add Supabase keys to <code>.env.local</code> to turn on real sign-in.
+                </p>
+              )}
+              {authError && (
+                <p role="alert" className="mt-3 rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                  {authError}
+                </p>
+              )}
+              {authNotice && (
+                <p role="status" className="mt-3 rounded-lg border border-[#C8DEC8] bg-[#EEF4EE] px-3 py-2 text-xs text-[#263B26]">
+                  {authNotice}
+                </p>
+              )}
+
               <div className="mt-4">
                 <label className="block text-xs font-semibold text-[#3B2314] mb-1.5">
                   I am joining as
@@ -603,6 +731,7 @@ export default function GeekArchiveApp() {
                 <button
                   type="button"
                   onClick={() => handleAuthSubmit(null, "Google")}
+                  disabled={authLoading}
                   className="flex items-center justify-center gap-2 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2.5 text-xs font-semibold text-[#2C1A10] transition hover:bg-[#FAF8F5]"
                 >
                   <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#3B2314] text-[10px] font-bold text-white">
@@ -614,6 +743,7 @@ export default function GeekArchiveApp() {
                 <button
                   type="button"
                   onClick={() => handleAuthSubmit(null, "GitHub")}
+                  disabled={authLoading}
                   className="flex items-center justify-center gap-2 rounded-xl border border-[#3B2314] bg-[#3B2314] px-3.5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#2C1A10]"
                 >
                   <GitBranch className="h-4 w-4 text-[#A8C6A8]" />
@@ -650,6 +780,8 @@ export default function GeekArchiveApp() {
                   <input
                     type="password"
                     required
+                    minLength={6}
+                    autoComplete={authMode === "signin" ? "current-password" : "new-password"}
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
                     placeholder="••••••••"
@@ -658,9 +790,16 @@ export default function GeekArchiveApp() {
                 </div>
                 <button
                   type="submit"
-                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-[#587561] px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(88,117,97,0.18)] transition hover:bg-[#46634F]"
+                  disabled={authLoading}
+                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-[#587561] px-4 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(88,117,97,0.18)] transition hover:bg-[#46634F] disabled:cursor-wait disabled:opacity-70"
                 >
-                  <span>{authMode === "signin" ? "Sign In to Workspace" : "Create Account"}</span>
+                  <span>
+                    {authLoading
+                      ? "Please wait…"
+                      : authMode === "signin"
+                      ? "Sign In to Workspace"
+                      : "Create Account"}
+                  </span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
               </form>

@@ -4,6 +4,10 @@ export const metadata = {
   title: "Geek Archive — Build work that matters",
   description:
     "AI-Powered Prototype Archive & Multidisciplinary Pod Matchmaking Engine connecting unfinished prototypes and SMME/NGO challenges with youth pods.",
+  icons: {
+    icon: "/geek-archive-logo.png",
+    apple: "/geek-archive-logo.png",
+  },
 };
 
 export default function RootLayout({ children }) {
