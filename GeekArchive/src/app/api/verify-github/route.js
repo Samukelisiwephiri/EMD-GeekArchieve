@@ -4,6 +4,7 @@
 // Used in demo mode; with Supabase, developers link their GitHub account instead
 // (the database confirms the linked identity).
 import { isGitHubUsername } from "../../../lib/verification";
+import { rateKey, requireUser } from "../../../lib/serverAuth";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,8 @@ function rateLimited(key) {
 }
 
 export async function POST(request) {
+  const auth = await requireUser(request);
+  if (!auth.ok) return auth.response;
   let body;
   try {
     body = await request.json();
@@ -30,8 +33,7 @@ export async function POST(request) {
   if (!isGitHubUsername(username) || !/^GA-[A-Z0-9]{6}$/.test(code)) {
     return Response.json({ verified: false, error: "Enter a valid GitHub username." }, { status: 400 });
   }
-  const ip = (request.headers.get("x-forwarded-for") || "").split(",")[0].trim() || "local";
-  if (rateLimited(ip)) {
+  if (rateLimited(rateKey(request, auth))) {
     return Response.json({ verified: false, error: "Too many checks. Please wait a few minutes." }, { status: 429 });
   }
 

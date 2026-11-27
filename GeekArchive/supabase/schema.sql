@@ -47,6 +47,16 @@ alter table public.prototypes add column if not exists demo_video_url text;
 alter table public.prototypes drop constraint if exists prototypes_demo_video_https;
 alter table public.prototypes add constraint prototypes_demo_video_https
   check (demo_video_url is null or demo_video_url ~* '^https://');
+-- Category organisations browse by, and whether the student chose to show the project.
+alter table public.prototypes add column if not exists category text;
+alter table public.prototypes drop constraint if exists prototypes_category_known;
+alter table public.prototypes add constraint prototypes_category_known
+  check (category is null or category in (
+    'cybersecurity', 'finance', 'health', 'education', 'agriculture', 'retail', 'logistics',
+    'civic', 'ngo', 'ai', 'iot', 'energy', 'other'
+  ));
+alter table public.prototypes add column if not exists showcased boolean not null default true;
+create index if not exists prototypes_category_idx on public.prototypes(category);
 alter table public.prototypes alter column completion_pct drop default;
 create index if not exists prototypes_created_by_idx on public.prototypes(created_by);
 create unique index if not exists prototypes_slug_key on public.prototypes(slug);
@@ -407,7 +417,12 @@ create policy prototypes_read_role_scoped on public.prototypes
           public.get_current_profile_role() in ('organization', 'admin')
           and (
             owner_role is distinct from 'youth'
-            or (public.is_verified(auth.uid()) and public.is_verified(prototypes.created_by))
+            -- Students' projects: only the ones they chose to show, and only when both sides are verified.
+            or (
+              prototypes.showcased
+              and public.is_verified(auth.uid())
+              and public.is_verified(prototypes.created_by)
+            )
           )
         )
         or public.has_assigned_prototype(prototypes.id, auth.uid())
@@ -565,6 +580,9 @@ begin
     or public.get_current_profile_role() <> 'organization' then
     raise exception 'Only an SMME/NGO account can request a pod';
   end if;
+  if not public.is_verified(organization_uuid) then
+    raise exception 'Please verify your organisation before requesting a pod';
+  end if;
 
   if length(trim(coalesce(p_raw_brief, ''))) < 10 then
     raise exception 'Please provide at least 10 characters describing the need';
@@ -602,6 +620,7 @@ begin
     from public.talent_profiles tp
     where tp.role = role_task.role
       and tp.available_for_match
+      and public.is_verified(tp.user_id) -- only verified students join pods
     order by
       ts_rank(
         to_tsvector(

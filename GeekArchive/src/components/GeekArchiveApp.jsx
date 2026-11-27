@@ -44,6 +44,10 @@ import VerificationCenter, { VerifiedBadge } from "./VerificationCenter";
 import AdminVerifications from "./AdminVerifications";
 import { ConsentGate, PrivacyCenter, PrivacyNotice } from "./Privacy";
 import { ACCOUNT_TYPES, POPIA_NOTICE_VERSION, isInstitutionEmail } from "../lib/verification";
+import { CATEGORIES, CATEGORY_BY_ID, categoryLabel, suggestCategory } from "../lib/categories";
+import GitHubImport from "./GitHubImport";
+import SearchSuggest, { matchProject } from "./SearchSuggest";
+import AiRecommendPanel from "./AiRecommendPanel";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -65,7 +69,7 @@ const uniqueList = (value) => {
 // The embedding column is left out on purpose: it is large and the UI does not use it.
 const PROTOTYPE_COLUMNS =
   "id, title, aliases, summary, description, repo_url, tech_stack, completion_pct, " +
-  "missing_modules, domain, demo_video_url, suggested_price, is_illustrative, included_tailoring, " +
+  "missing_modules, domain, demo_video_url, category, showcased, suggested_price, is_illustrative, included_tailoring, " +
   "created_by, owner_display_name, owner_role, created_at";
 
 const ROLE_LABELS = { youth: "Youth Pod Talent", organization: "SMME / NGO", admin: "SMME / NGO" };
@@ -78,6 +82,8 @@ const fromPrototypeRow = (row) => ({
   description: row.description || "",
   repo: row.repo_url || "",
   demoVideo: row.demo_video_url || "",
+  category: row.category || "",
+  showcased: row.showcased !== false,
   stack: row.tech_stack || [],
   completion: row.completion_pct,
   missing: row.missing_modules || [],
@@ -99,6 +105,8 @@ const toPrototypeRow = (project) => ({
   description: project.description || "",
   repo_url: project.repo || null,
   demo_video_url: project.demoVideo || null,
+  category: project.category || null,
+  ...(typeof project.showcased === "boolean" ? { showcased: project.showcased } : {}),
   tech_stack: project.stack || [],
   domain: project.domain || null,
 });
@@ -454,7 +462,7 @@ export default function GeekArchiveApp() {
   const [archiveQuery, setArchiveQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
   const [discoverSkill, setDiscoverSkill] = useState(""); // lower-case skill, "" = all
-  const [discoverSector, setDiscoverSector] = useState(""); // lower-case sector, "" = all
+  const [discoverCategory, setDiscoverCategory] = useState(""); // category id, "" = all
   const [talentProfiles, setTalentProfiles] = useState([]);
   const [newTalent, setNewTalent] = useState({
     name: "Naledi Khumalo",
@@ -527,6 +535,7 @@ export default function GeekArchiveApp() {
   const [newRepoTitle, setNewRepoTitle] = useState("");
   const [newRepoUrl, setNewRepoUrl] = useState("");
   const [newRepoVideo, setNewRepoVideo] = useState("");
+  const [newRepoCategory, setNewRepoCategory] = useState("");
   const [newRepoDescription, setNewRepoDescription] = useState("");
   const [newRepoStack, setNewRepoStack] = useState("");
   const [auditNote, setAuditNote] = useState("");
@@ -861,7 +870,10 @@ export default function GeekArchiveApp() {
     const text = problemBrief.toLowerCase();
     const searchTerms = text.split(/[^a-z0-9]+/).filter((term) => term.length > 2);
     const rankedProjects = prototypes
-      .filter((project) => project.ownerRole !== "Youth Pod Talent" || canSeeStudentWork(project.ownerId))
+      .filter(
+        (project) =>
+          project.ownerRole !== "Youth Pod Talent" || (project.showcased !== false && canSeeStudentWork(project.ownerId))
+      )
       .map((project) => {
         const searchable = [
           project.title,
@@ -947,6 +959,9 @@ export default function GeekArchiveApp() {
       description: newRepoDescription.trim(),
       repo: parseGitHubRepo(newRepoUrl)?.url || newRepoUrl.trim(),
       demoVideo: newRepoVideo.trim(),
+      // Pick from the form, or guess from what they wrote.
+      category: newRepoCategory || suggestCategory(newRepoTitle, newRepoDescription, newRepoStack, auditNote),
+      showcased: true,
       stack: uniqueList(newRepoStack),
       completion: null,
       missing: [],
@@ -993,6 +1008,7 @@ export default function GeekArchiveApp() {
         description: created.description,
         repo: created.repo,
         demoVideo: created.demoVideo,
+        category: created.category,
         stack: created.stack,
         domain: created.domain,
       };
@@ -1004,6 +1020,7 @@ export default function GeekArchiveApp() {
         description: created.description || existing.description,
         repo: created.repo || existing.repo,
         demoVideo: created.demoVideo || existing.demoVideo,
+        category: newRepoCategory || existing.category || created.category,
         stack: created.stack.length ? created.stack : existing.stack,
         domain: created.domain || existing.domain,
       };
@@ -1055,10 +1072,68 @@ export default function GeekArchiveApp() {
     resetForm();
   };
 
+  // "Owner/repo-name" -> "Repo Name"
+  const prettyRepoName = (name) =>
+    name.replace(/[-_.]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim().replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const handleImportRepos = async (repos) => {
+    if (!isYouth || !isVerified || !user?.id) return;
+    setProjectError("");
+    const existing = new Set(prototypes.filter((p) => p.ownerId === user.id).map((p) => (p.repo || "").toLowerCase()));
+    const fresh = repos.filter((r) => !existing.has(r.url.toLowerCase()));
+    const drafts = fresh.map((r, i) => ({
+      id: `proto-${Date.now()}-${i}`,
+      title: prettyRepoName(r.name),
+      summary: (r.description || "").split(/[.!?]/)[0] || "",
+      description: r.description || "",
+      repo: r.url,
+      demoVideo: "",
+      stack: uniqueList([r.language, ...(r.topics || []).slice(0, 5)].filter(Boolean).join(",")),
+      completion: null,
+      missing: [],
+      estimatedValue: null,
+      domain: "", // the category chip already shows this
+      category: r.category,
+      showcased: true,
+      ownerId: user.id,
+      ownerName: user.name,
+      ownerRole: user.role,
+      postedAt: new Date().toISOString(),
+    }));
+    if (!drafts.length) return;
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("prototypes")
+        .insert(drafts.map((d) => ({ ...toPrototypeRow(d), created_by: user.id })))
+        .select(PROTOTYPE_COLUMNS);
+      if (error) {
+        setProjectError(error.message);
+        return;
+      }
+      setPrototypes((prev) => [...data.map(fromPrototypeRow), ...prev]);
+      return;
+    }
+    setPrototypes((prev) => [...drafts, ...prev]);
+  };
+
+  const handleToggleShowcase = async (project) => {
+    if (project.ownerId !== user?.id) return;
+    const showcased = !(project.showcased !== false);
+    if (supabase) {
+      const { error } = await supabase.from("prototypes").update({ showcased }).eq("id", project.id);
+      if (error) {
+        setProjectError(error.message);
+        return;
+      }
+    }
+    setPrototypes((prev) => prev.map((p) => (p.id === project.id ? { ...p, showcased } : p)));
+  };
+
   const clearProjectForm = () => {
     setNewRepoTitle("");
     setNewRepoUrl("");
     setNewRepoVideo("");
+    setNewRepoCategory("");
     setNewRepoDescription("");
     setNewRepoStack("");
     setAuditNote("");
@@ -1080,6 +1155,7 @@ export default function GeekArchiveApp() {
     setNewRepoTitle(project.title);
     setNewRepoUrl(project.repo || "");
     setNewRepoVideo(project.demoVideo || "");
+    setNewRepoCategory(project.category || "");
     setNewRepoDescription(project.description || "");
     setNewRepoStack((project.stack || []).join(", "));
     setAuditNote(project.domain || "");
@@ -1399,7 +1475,7 @@ export default function GeekArchiveApp() {
   };
 
   const visiblePrototypes = prototypes.filter((proto) => {
-    if (proto.ownerRole === "Youth Pod Talent" && !canSeeStudentWork(proto.ownerId)) return false;
+    if (proto.ownerRole === "Youth Pod Talent" && (proto.showcased === false || !canSeeStudentWork(proto.ownerId))) return false;
     const searchable = [
       proto.title,
       proto.domain,
@@ -1573,7 +1649,7 @@ export default function GeekArchiveApp() {
     ? {
         userId: viewProfileUserId,
         profile: talentDirectory.find((p) => p.userId === viewProfileUserId) || null,
-        projects: prototypes.filter((p) => p.ownerId === viewProfileUserId),
+        projects: prototypes.filter((p) => p.ownerId === viewProfileUserId && p.showcased !== false),
       }
     : null;
   if (viewedProfile) {
@@ -1588,25 +1664,29 @@ export default function GeekArchiveApp() {
     setOpenProjectId(projectId);
   };
   const myProjects = prototypes.filter((proto) => user?.id && proto.ownerId === user.id);
+  // SMMEs/NGOs only ever see the projects students chose to show.
   const youthPostedProjects = prototypes.filter(
-    (proto) => proto.ownerRole === "Youth Pod Talent" && canSeeStudentWork(proto.ownerId)
+    (proto) =>
+      proto.ownerRole === "Youth Pod Talent" && proto.showcased !== false && canSeeStudentWork(proto.ownerId)
   );
   // Filter options come from what students actually posted. Matching ignores case,
   // so "react" and "React" count as the same skill.
   const skillOptions = countOptions(youthPostedProjects.flatMap((proto) => proto.stack));
-  const sectorOptions = countOptions(youthPostedProjects.map((proto) => proto.domain));
+  const categoryCounts = youthPostedProjects.reduce((counts, p) => {
+    const id = p.category || "other";
+    counts[id] = (counts[id] || 0) + 1;
+    return counts;
+  }, {});
+  const categoryOptions = CATEGORIES.filter((c) => categoryCounts[c.id]);
   // A filter whose last project was deleted quietly falls back to "All".
   const activeSkill = skillOptions.some((o) => o.key === discoverSkill) ? discoverSkill : "";
-  const activeSector = sectorOptions.some((o) => o.key === discoverSector) ? discoverSector : "";
-  const hasDiscoverFilters = Boolean(activeSkill || activeSector || discoverQuery.trim());
+  const activeCategory = categoryCounts[discoverCategory] ? discoverCategory : "";
+  const hasDiscoverFilters = Boolean(activeSkill || activeCategory || discoverQuery.trim());
   const discoveredProjects = youthPostedProjects.filter(
     (proto) =>
       (!activeSkill || proto.stack.some((tech) => tech.toLowerCase() === activeSkill)) &&
-      (!activeSector || (proto.domain || "").toLowerCase() === activeSector) &&
-      [proto.title, proto.domain, proto.summary, proto.description, proto.ownerName, ...proto.stack]
-        .join(" ")
-        .toLowerCase()
-        .includes(discoverQuery.trim().toLowerCase())
+      (!activeCategory || (proto.category || "other") === activeCategory) &&
+      Boolean(matchProject(proto, discoverQuery))
   );
   // Requests this student has received, newest first; "new" ones count as unread.
   const myContactRequests = contactRequests.filter(
@@ -1617,7 +1697,7 @@ export default function GeekArchiveApp() {
   const clearDiscoverFilters = () => {
     setDiscoverQuery("");
     setDiscoverSkill("");
-    setDiscoverSector("");
+    setDiscoverCategory("");
   };
   const talentRoleFor = (ownerId) =>
     talentProfiles.find((profile) => profile.userId === ownerId)
@@ -1674,6 +1754,21 @@ export default function GeekArchiveApp() {
         <p className="mt-1 text-[11px] text-[#8A786D]">
           SMMEs can open it, and Geek Archive's AI reads it to explain your project to them.
         </p>
+      </div>
+      <div>
+        <label htmlFor="project-category" className="mb-1 block text-xs font-semibold text-[#3B2314]">Category</label>
+        <select
+          id="project-category"
+          value={newRepoCategory}
+          onChange={(e) => setNewRepoCategory(e.target.value)}
+          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+        >
+          <option value="">Choose for me from the description</option>
+          {CATEGORIES.map((c) => (
+            <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>
+          ))}
+        </select>
+        <p className="mt-1 text-[11px] text-[#8A786D]">Organisations browse by category, e.g. Cybersecurity or Finance.</p>
       </div>
       <div>
         <label htmlFor="project-video" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[#3B2314]">
@@ -2511,6 +2606,17 @@ export default function GeekArchiveApp() {
           />
         )}
 
+        {activeTab === "discover" && !isYouth && isVerified && youthPostedProjects.length > 0 && (
+          <div className="mb-4">
+            <AiRecommendPanel
+              projects={youthPostedProjects}
+              orgType={orgType}
+              defaultNeed={problemBrief}
+              onOpenProject={(id) => setOpenProjectId(id)}
+            />
+          </div>
+        )}
+
         {activeTab === "discover" && !isYouth && isVerified && (
           <section className="space-y-4">
             <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
@@ -2526,20 +2632,17 @@ export default function GeekArchiveApp() {
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
-                <label className="block">
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] sm:items-end">
+                <div>
                   <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Search</span>
-                  <span className="relative block">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#7C8B80]" />
-                    <input
-                      type="search"
-                      value={discoverQuery}
-                      onChange={(e) => setDiscoverQuery(e.target.value)}
-                      placeholder="Project, skill, sector or person"
-                      className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] py-2.5 pl-9 pr-3 text-sm"
-                    />
-                  </span>
-                </label>
+                  <SearchSuggest
+                    value={discoverQuery}
+                    onChange={setDiscoverQuery}
+                    projects={youthPostedProjects}
+                    onPick={(project) => setOpenProjectId(project.id)}
+                    placeholder="Start typing: a project, category, skill or person"
+                  />
+                </div>
                 <label className="block">
                   <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Skill</span>
                   <select
@@ -2556,22 +2659,6 @@ export default function GeekArchiveApp() {
                     ))}
                   </select>
                 </label>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Sector</span>
-                  <select
-                    value={activeSector}
-                    onChange={(e) => setDiscoverSector(e.target.value)}
-                    disabled={!sectorOptions.length}
-                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2.5 text-sm disabled:opacity-60"
-                  >
-                    <option value="">All sectors</option>
-                    {sectorOptions.map((option) => (
-                      <option key={option.key} value={option.key}>
-                        {option.label} ({option.count})
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <button
                   type="button"
                   onClick={clearDiscoverFilters}
@@ -2581,6 +2668,33 @@ export default function GeekArchiveApp() {
                   Clear filters
                 </button>
               </div>
+              {categoryOptions.length > 0 && (
+                <div role="group" aria-label="Categories" className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    aria-pressed={!activeCategory}
+                    onClick={() => setDiscoverCategory("")}
+                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                      !activeCategory ? "bg-[#163126] text-[#C8DD9F]" : "bg-[#F4F7F1] text-[#3E4F46] hover:bg-[#E8EEE5]"
+                    }`}
+                  >
+                    All ({youthPostedProjects.length})
+                  </button>
+                  {categoryOptions.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      aria-pressed={activeCategory === c.id}
+                      onClick={() => setDiscoverCategory(activeCategory === c.id ? "" : c.id)}
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                        activeCategory === c.id ? "bg-[#163126] text-[#C8DD9F]" : "bg-[#F4F7F1] text-[#3E4F46] hover:bg-[#E8EEE5]"
+                      }`}
+                    >
+                      <span aria-hidden="true">{c.emoji}</span> {c.label} ({categoryCounts[c.id]})
+                    </button>
+                  ))}
+                </div>
+              )}
               {youthPostedProjects.length > 0 && (
                 <p className="mt-3 text-xs text-[#6E5A4F]" aria-live="polite">
                   Showing {discoveredProjects.length} of {youthPostedProjects.length} projects
@@ -2595,7 +2709,7 @@ export default function GeekArchiveApp() {
                 </p>
                 <p className="mt-1 text-sm text-[#6E5A4F]">
                   {youthPostedProjects.length
-                    ? "Try a different skill, sector or search."
+                    ? "Try a different category, skill or search."
                     : "When students and developers post their work, it will appear here."}
                 </p>
                 {youthPostedProjects.length > 0 && (
@@ -2613,8 +2727,10 @@ export default function GeekArchiveApp() {
                 {discoveredProjects.map((proto) => (
                   <article key={proto.id} className="flex flex-col rounded-2xl border border-[#E6DFD5] bg-white p-5">
                     <VideoPreview project={proto} onOpen={() => setOpenProjectId(proto.id)} />
-                    {proto.domain && (
-                      <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                    {(proto.category || proto.domain) && (
+                      <span className="text-xs font-semibold text-[#5E7A5E]">
+                        {CATEGORY_BY_ID[proto.category]?.emoji} {categoryLabel(proto.category) || proto.domain}
+                      </span>
                     )}
                     <h3 className="text-base font-bold text-[#2C1A10]">
                       <button
@@ -2950,6 +3066,20 @@ export default function GeekArchiveApp() {
           </section>
         )}
 
+        {activeTab === "myprojects" && isYouth && isVerified && (
+          <div className="mb-6">
+            <GitHubImport
+              defaultUsername={
+                myVerification?.githubUsername ||
+                (ownTalentProfile?.portfolio || "").match(/github\.com\/([A-Za-z0-9-]+)/i)?.[1] ||
+                ""
+              }
+              existingRepoUrls={new Set(myProjects.map((p) => (p.repo || "").toLowerCase()).filter(Boolean))}
+              onImport={handleImportRepos}
+            />
+          </div>
+        )}
+
         {activeTab === "myprojects" && isYouth && (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
             {isVerified ? (
@@ -3069,6 +3199,33 @@ export default function GeekArchiveApp() {
                         ))}
                       </div>
                     )}
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <span className="rounded-full bg-[#F4F9EC] px-2.5 py-0.5 text-[11px] font-semibold text-[#2F472F]">
+                        {CATEGORY_BY_ID[proto.category]?.emoji || "📁"} {categoryLabel(proto.category) || "No category"}
+                      </span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={proto.showcased !== false}
+                        aria-label={`Show ${proto.title} to organisations`}
+                        onClick={() => handleToggleShowcase(proto)}
+                        className="inline-flex items-center gap-2 text-xs font-semibold text-[#3B2314]"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
+                            proto.showcased !== false ? "bg-[#5E7A5E]" : "bg-[#D8CFC4]"
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 rounded-full bg-white shadow transition ${
+                              proto.showcased !== false ? "translate-x-4" : "translate-x-0.5"
+                            }`}
+                          />
+                        </span>
+                        {proto.showcased !== false ? "Shown to organisations" : "Hidden from organisations"}
+                      </button>
+                    </div>
                     <div className="mt-3">
                       <ProjectLinks project={proto} compact />
                     </div>
