@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { apiFetch } from "../lib/apiClient";
 import {
   BadgeCheck,
   Building2,
@@ -100,7 +101,7 @@ export default function VerificationCenter({ user, group, verification, supabase
     setBusy(true);
     setError("");
     try {
-      const res = await fetch("/api/verify-github", {
+      const res = await apiFetch("/api/verify-github", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: githubUsername.trim(), code: githubCode }),

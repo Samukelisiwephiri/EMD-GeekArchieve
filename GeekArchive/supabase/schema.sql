@@ -85,6 +85,12 @@ create table if not exists public.youth_pods (
   stakeholder_signed_off boolean not null default false,
   created_at timestamptz not null default now()
 );
+-- Copied in when the pod is created so assigned students can see who it's for and
+-- what's needed (they can't read the organisation's profile or brief directly).
+alter table public.youth_pods add column if not exists organization_name text;
+alter table public.youth_pods add column if not exists project_title text;
+alter table public.youth_pods add column if not exists need text;
+alter table public.youth_pods add column if not exists signed_off_at timestamptz;
 
 alter table public.youth_pods
   add column if not exists organization_id uuid references public.profiles(id) on delete cascade;
@@ -599,12 +605,15 @@ begin
   values (organization_uuid, p_org_type, trim(p_raw_brief), trim(p_raw_brief))
   returning id into brief_uuid;
 
-  insert into public.youth_pods (organization_id, prototype_id, brief_id, stage)
+  insert into public.youth_pods (organization_id, prototype_id, brief_id, stage, organization_name, project_title, need)
   values (
     organization_uuid,
     p_prototype_id,
     brief_uuid,
-    'Pod matching in progress'
+    'Pod matching in progress',
+    (select display_name from public.profiles where id = organization_uuid),
+    (select title from public.prototypes where id = p_prototype_id),
+    left(trim(p_raw_brief), 1500)
   )
   returning id into pod_uuid;
 
@@ -693,6 +702,7 @@ begin
 
   update public.youth_pods
   set stakeholder_signed_off = true,
+      signed_off_at = now(),
       progress_pct = 100,
       stage = 'Verified Shipped & Credential Issued'
   where id = p_pod_id and organization_id = auth.uid();

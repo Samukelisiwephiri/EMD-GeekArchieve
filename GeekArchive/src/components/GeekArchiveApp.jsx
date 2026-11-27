@@ -322,32 +322,6 @@ const INITIAL_PROTOTYPES = [
   },
 ];
 
-const SAMPLE_PODS = [
-  {
-    id: "pod-101",
-    client: "Bra Joe's Tuckshop (Pretoria)",
-    prototype: "KasiLedger — Spaza Stock & Credit Tracker",
-    stage: "Stage 4: Live Staging & Sign-Off",
-    progress: 85,
-    members: [
-      { role: "Developer", name: "Thabo M.", focus: "Offline queue + API routes" },
-      { role: "UI/UX Designer", name: "Amahle K.", focus: "One-thumb mobile checkout" },
-      { role: "Business Student", name: "Lesedi N.", focus: "Weekly credit pitch & guide" },
-    ],
-  },
-  {
-    id: "pod-102",
-    client: "Sizanani Youth Skills NPC",
-    prototype: "UbuntuAid — Community Grant & Voucher Hub",
-    stage: "Stage 3: Pod Sprint Active",
-    progress: 55,
-    members: [
-      { role: "Developer", name: "Sipho D.", focus: "Supabase RLS + voucher status" },
-      { role: "UI/UX Designer", name: "Naledi R.", focus: "Low-data step wizard" },
-      { role: "Business Student", name: "Kamohelo T.", focus: "Donor reporting template" },
-    ],
-  },
-];
 
 const INTERVIEW_PROMPTS = {
   Developer:
@@ -405,6 +379,10 @@ export default function GeekArchiveApp() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  // Password recovery: true after the user opens the reset link from their email.
+  const [recoveringPassword, setRecoveringPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [recoveryMessage, setRecoveryMessage] = useState({ type: "", text: "" });
   const [user, setUser] = useState(
     isSupabaseConfigured
       ? null
@@ -458,7 +436,9 @@ export default function GeekArchiveApp() {
   const [contactError, setContactError] = useState("");
   const [respondingRequestId, setRespondingRequestId] = useState(null);
   const [messagesError, setMessagesError] = useState("");
-  const [pods, setPods] = useState(SAMPLE_PODS);
+  // Real pods: requested by verified SMMEs/NGOs, staffed with verified students.
+  const [pods, setPods] = useState([]);
+  const [podRequest, setPodRequest] = useState({ status: "idle", message: "" });
   const [archiveQuery, setArchiveQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
   const [discoverSkill, setDiscoverSkill] = useState(""); // lower-case skill, "" = all
@@ -555,11 +535,12 @@ export default function GeekArchiveApp() {
   const [talentDeleting, setTalentDeleting] = useState(false);
   const showTalentForm = !ownTalentProfile || editingTalent;
 
-  const youthMatchedMember = user?.id
-    ? matchedResult.pod.find((member) => member.profile?.userId === user.id)
-    : null;
-  const youthMatchedOpportunity =
-    isYouth && youthMatchedMember ? matchedResult.prototype : null;
+  // Pods this organisation requested / this student is assigned to.
+  const orgPods = pods.filter((pod) => pod.orgId && pod.orgId === user?.id);
+  const myPods = pods.filter((pod) => pod.members.some((m) => m.userId && m.userId === user?.id));
+  const myActivePods = myPods.filter((pod) => !pod.signedOff);
+  const myCredentials = myPods.filter((pod) => pod.signedOff);
+  const myRoleIn = (pod) => pod.members.find((m) => m.userId === user?.id);
 
   // Real accounts: when Supabase keys are set, restore the session and follow sign-in changes.
   useEffect(() => {
@@ -604,7 +585,8 @@ export default function GeekArchiveApp() {
     };
 
     supabase.auth.getSession().then(({ data }) => applySession(data.session));
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") setRecoveringPassword(true);
       // Deferred so Supabase isn't queried from inside its own auth callback.
       setTimeout(() => applySession(session), 0);
     });
@@ -700,6 +682,11 @@ export default function GeekArchiveApp() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedInUserId, isYouth]);
+
+  useEffect(() => {
+    if (supabase && signedInUserId) loadPods();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedInUserId]);
 
   // Load this user's verification (and, for admins, the review queue).
   useEffect(() => {
@@ -825,6 +812,44 @@ export default function GeekArchiveApp() {
     setShowAuthLanding(false);
   };
 
+  const handleForgotPassword = async () => {
+    setAuthError("");
+    setAuthNotice("");
+    if (!authEmail.trim().includes("@")) {
+      setAuthError("Enter your email address above first, then click “Forgot password?”.");
+      return;
+    }
+    setAuthLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(authEmail.trim(), {
+      redirectTo: window.location.origin,
+    });
+    setAuthLoading(false);
+    // Same message either way, so the form doesn't reveal which emails have accounts.
+    if (error && error.status !== 429) {
+      setAuthError(error.message);
+      return;
+    }
+    setAuthNotice(
+      error ? "Too many requests. Please wait a minute and try again." : "If that email has an account, we've sent a link to reset the password."
+    );
+  };
+
+  const handleSetNewPassword = async (e) => {
+    e.preventDefault();
+    if (newPassword.length < 8) {
+      setRecoveryMessage({ type: "error", text: "Use at least 8 characters." });
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setRecoveryMessage({ type: "error", text: error.message });
+      return;
+    }
+    setNewPassword("");
+    setRecoveryMessage({ type: "ok", text: "Your password has been changed." });
+    setRecoveringPassword(false);
+  };
+
   const handleSignOut = async () => {
     if (supabase) {
       await supabase.auth.signOut();
@@ -832,6 +857,7 @@ export default function GeekArchiveApp() {
       setPrototypes([]);
       setContactRequests([]);
       setTalentProfiles([]);
+      setPods([]);
     }
     setUser(null);
     setShowVerify(false);
@@ -1451,11 +1477,100 @@ export default function GeekArchiveApp() {
     setConfirmDeleteTalent(false);
   };
 
-  const handleStakeholderSignOff = (podId) => {
+  // Load pods from Supabase. RLS returns an organisation's own pods, and for a student
+  // only pods they're assigned to (and only their own member row).
+  const loadPods = async () => {
+    if (!supabase) return;
+    const { data: podRows, error } = await supabase
+      .from("youth_pods")
+      .select("id, organization_id, prototype_id, stage, progress_pct, stakeholder_signed_off, signed_off_at, created_at, organization_name, project_title, need")
+      .order("created_at", { ascending: false });
+    if (error || !podRows) return;
+    const ids = podRows.map((p) => p.id);
+    const { data: memberRows } = ids.length
+      ? await supabase.from("youth_pod_members").select("pod_id, user_id, role, task").in("pod_id", ids)
+      : { data: [] };
+    const userIds = [...new Set((memberRows || []).map((m) => m.user_id))];
+    const { data: nameRows } = userIds.length
+      ? await supabase.from("profiles").select("id, display_name").in("id", userIds)
+      : { data: [] };
+    const names = new Map((nameRows || []).map((r) => [r.id, r.display_name]));
+    setPods(
+      podRows.map((p) => ({
+        id: p.id,
+        orgId: p.organization_id,
+        orgName: p.organization_name || "An organisation",
+        prototypeId: p.prototype_id,
+        projectTitle: p.project_title || "Project",
+        need: p.need || "",
+        stage: p.stage,
+        progress: p.progress_pct,
+        signedOff: p.stakeholder_signed_off,
+        signedOffAt: p.signed_off_at,
+        createdAt: p.created_at,
+        members: (memberRows || [])
+          .filter((m) => m.pod_id === p.id)
+          .map((m) => ({ role: m.role, task: m.task, userId: m.user_id, name: names.get(m.user_id) || null })),
+      }))
+    );
+  };
+
+  const handleRequestPod = async () => {
+    const project = matchedResult.prototype;
+    if (isYouth || !isVerified || !project) return;
+    setPodRequest({ status: "loading", message: "" });
+    if (supabase) {
+      const { error } = await supabase.rpc("request_youth_pod", {
+        p_org_type: orgType,
+        p_raw_brief: problemBrief,
+        p_prototype_id: project.id,
+      });
+      if (error) {
+        setPodRequest({ status: "error", message: error.message });
+        return;
+      }
+      await loadPods();
+    } else {
+      setPods((prev) => [
+        {
+          id: `pod-${Date.now()}`,
+          orgId: user.id,
+          orgName: user.name,
+          prototypeId: project.id,
+          projectTitle: project.title,
+          need: problemBrief.trim(),
+          stage: "Pod matching in progress",
+          progress: 0,
+          signedOff: false,
+          signedOffAt: null,
+          createdAt: new Date().toISOString(),
+          members: matchedResult.pod.map((m) => ({
+            role: m.role,
+            task: m.task,
+            userId: m.profile?.userId || null,
+            name: m.profile?.name || null,
+          })),
+        },
+        ...prev,
+      ]);
+    }
+    setPodRequest({ status: "done", message: `Pod requested for ${project.title}. The assigned students can now see it.` });
+    setActiveTab("pods");
+  };
+
+  const handleStakeholderSignOff = async (podId) => {
+    if (supabase) {
+      const { error } = await supabase.rpc("sign_off_youth_pod", { p_pod_id: podId });
+      if (error) {
+        setPodRequest({ status: "error", message: error.message });
+        return;
+      }
+    }
+    const now = new Date().toISOString();
     setPods((prev) =>
       prev.map((p) =>
         p.id === podId
-          ? { ...p, progress: 100, stage: "Verified Shipped & Credential Issued" }
+          ? { ...p, progress: 100, signedOff: true, signedOffAt: now, stage: "Verified Shipped & Credential Issued" }
           : p
       )
     );
@@ -1464,7 +1579,10 @@ export default function GeekArchiveApp() {
   const handleEvaluateInterview = (e) => {
     e.preventDefault();
     const wordCount = candidateAnswer.trim().split(/\s+/).filter(Boolean).length;
-    const score = wordCount >= 25 ? "8.8 / 10" : wordCount >= 10 ? "7.4 / 10" : "5.8 / 10";
+    // Simple automatic practice scoring (length + concrete detail). Not an assessment.
+    const hasNumber = /\d/.test(candidateAnswer);
+    const base = wordCount >= 60 ? 7 : wordCount >= 25 ? 6 : wordCount >= 10 ? 4.5 : 3;
+    const score = `${Math.min(10, base + (hasNumber ? 1 : 0)).toFixed(1)} / 10`;
     setInterviewFeedback({
       score,
       strength:
@@ -1621,6 +1739,12 @@ export default function GeekArchiveApp() {
       setTalentProfiles((current) => current.filter((p) => p.userId !== id));
       setPrototypes((current) => current.filter((p) => p.ownerId !== id));
       setContactRequests((current) => current.filter((r) => r.studentId !== id && r.orgId !== id));
+      // Remove them from pods: their own pods go, and their seat in others is emptied.
+      setPods((current) =>
+        current
+          .filter((p) => p.orgId !== id)
+          .map((p) => ({ ...p, members: p.members.map((m) => (m.userId === id ? { ...m, userId: null, name: null } : m)) }))
+      );
       setVerifications((current) => {
         const next = { ...current };
         delete next[id];
@@ -2034,7 +2158,7 @@ export default function GeekArchiveApp() {
                   <input
                     type="password"
                     required
-                    minLength={6}
+                    minLength={supabase ? 8 : 6}
                     autoComplete={authMode === "signin" ? "current-password" : "new-password"}
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
@@ -2042,6 +2166,16 @@ export default function GeekArchiveApp() {
                     className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm text-[#2C1A10] focus:border-[#5E7A5E] focus:outline-none"
                   />
                 </div>
+                {supabase && authMode === "signin" && (
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={authLoading}
+                    className="text-xs font-semibold text-[#3F5D3F] hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                )}
                 {authMode === "signup" ? (
                   <label className="flex items-start gap-2 text-xs text-[#3B2314]">
                     <input
@@ -2388,44 +2522,27 @@ export default function GeekArchiveApp() {
         {activeTab === "opportunities" && isYouth && (
           <section className="rounded-2xl border border-[#E6DFD5] bg-white p-6">
             <div className="mb-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">
-                Youth dashboard
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
               <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">Matched opportunities</h2>
-              <p className="mt-1 text-sm text-[#6E5A4F]">
-                Only projects matched to your profile appear here.
-              </p>
+              <p className="mt-1 text-sm text-[#6E5A4F]">Organisations that requested a pod with you in it.</p>
             </div>
-            {youthMatchedOpportunity ? (
-              <article className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
-                <h3 className="font-bold text-[#2C1A10]">{youthMatchedOpportunity.title}</h3>
-                {youthMatchedOpportunity.summary && (
-                  <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">
-                    {youthMatchedOpportunity.summary}
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-[#6E5A4F]">
-                  Your pod role: {youthMatchedMember.role}
-                </p>
-                <p className="mt-3 text-sm text-[#3B2314]">{youthMatchedMember.task}</p>
-                {youthMatchedOpportunity.stack.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {youthMatchedOpportunity.stack.map((tech) => (
-                      <span
-                        key={tech}
-                        className="rounded-md bg-[#EEF4EE] px-2.5 py-1 text-xs font-medium text-[#3F5D3F]"
-                      >
-                        {tech}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </article>
+            {myActivePods.length ? (
+              <div className="space-y-3">
+                {myActivePods.map((pod) => (
+                  <article key={pod.id} aria-label={`Opportunity: ${pod.projectTitle} for ${pod.orgName}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
+                    <p className="text-xs font-semibold text-[#5E7A5E]">{pod.orgName}</p>
+                    <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                    {pod.need && <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">“{pod.need}”</p>}
+                    <p className="mt-3 text-xs text-[#6E5A4F]">Your pod role: <strong>{myRoleIn(pod)?.role}</strong></p>
+                    <p className="mt-1 text-sm text-[#3B2314]">{myRoleIn(pod)?.task}</p>
+                  </article>
+                ))}
+              </div>
             ) : (
               <div className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-7 text-center">
                 <p className="font-semibold text-[#2C1A10]">No matched opportunities yet</p>
                 <p className="mt-1 text-sm text-[#6E5A4F]">
-                  Keep your profile current. Projects matched to you will appear here.
+                  Keep your profile and projects up to date. When an organisation requests a pod with you, it appears here.
                 </p>
               </div>
             )}
@@ -2593,6 +2710,30 @@ export default function GeekArchiveApp() {
                   </div>
                 ))}
               </div>
+              {matchedResult.prototype && (
+                <div className="rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-4">
+                  <p className="text-sm font-semibold text-[#163126]">Ready to start?</p>
+                  <p className="mt-0.5 text-xs text-[#3E4F46]">
+                    Requesting the pod assigns verified students to {matchedResult.prototype.title} and tells them about your need.
+                  </p>
+                  {isVerified ? (
+                    <button
+                      type="button"
+                      onClick={handleRequestPod}
+                      disabled={podRequest.status === "loading"}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2 text-sm font-semibold text-[#C8DD9F] disabled:opacity-70"
+                    >
+                      <Users className="h-4 w-4" />
+                      {podRequest.status === "loading" ? "Requesting…" : "Request this pod"}
+                    </button>
+                  ) : (
+                    <p className="mt-2 text-xs font-semibold text-[#6B5320]">Verify your organisation to request pods.</p>
+                  )}
+                  {podRequest.status === "error" && (
+                    <p role="alert" className="mt-2 text-xs text-[#8A2C1E]">{podRequest.message}</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -3653,99 +3794,101 @@ export default function GeekArchiveApp() {
         {activeTab === "pods" && isYouth && (
           <section className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">
-                Youth dashboard
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
               <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">My pod workspace</h2>
             </div>
-            {youthMatchedOpportunity ? (
-              <div className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
-                <h3 className="font-bold text-[#2C1A10]">{youthMatchedOpportunity.title}</h3>
-                <div className="mt-4 space-y-2">
-                  {matchedResult.pod.map((member) => (
-                    <div
-                      key={member.role}
-                      className="rounded-lg border border-[#E6DFD5] bg-white p-3"
-                    >
-                      <p className="text-xs font-bold text-[#2C1A10]">
-                        {member.role}{member.profile?.userId === user?.id ? " · You" : ""}
-                      </p>
-                      <p className="mt-1 text-xs text-[#5C493E]">{member.task}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            {myPods.length ? (
+              myPods.map((pod) => (
+                <article key={pod.id} aria-label={`Pod: ${pod.projectTitle}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                    <span className="text-xs font-semibold text-[#5E7A5E]">{pod.stage}</span>
+                  </div>
+                  <p className="text-xs text-[#6E5A4F]">For {pod.orgName}</p>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#EFEAE4]">
+                    <div className="h-full rounded-full bg-[#5E7A5E]" style={{ width: `${pod.progress}%` }} />
+                  </div>
+                  <div className="mt-3 rounded-lg border border-[#E6DFD5] bg-white p-3">
+                    <p className="text-xs font-bold text-[#2C1A10]">{myRoleIn(pod)?.role} · You</p>
+                    <p className="mt-1 text-xs text-[#5C493E]">{myRoleIn(pod)?.task}</p>
+                  </div>
+                </article>
+              ))
             ) : (
               <div className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-7 text-center">
                 <p className="font-semibold text-[#2C1A10]">No pod invitation yet</p>
-                <p className="mt-1 text-sm text-[#6E5A4F]">
-                  Your workspace will show projects and tasks after you are matched to a pod.
-                </p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">Your workspace will show projects and tasks after you are matched to a pod.</p>
               </div>
             )}
           </section>
         )}
 
         {activeTab === "pods" && !isYouth && (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-            {pods.map((pod) => (
-              <div key={pod.id} className="flex flex-col justify-between rounded-2xl border border-[#E6DFD5] bg-white p-6">
-                <div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5E7A5E]">
-                      <Users className="h-4 w-4" />
-                      <span>{pod.stage}</span>
-                    </span>
-                    <span className="text-xs font-bold text-[#3B2314]">{pod.progress}%</span>
-                  </div>
-                  <h3 className="mt-2 text-lg font-bold text-[#2C1A10]">{pod.client}</h3>
-                  <p className="text-xs text-[#6E5A4F]">Prototype: {pod.prototype}</p>
-
-                  <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[#EFEAE4]">
-                    <div
-                      className="h-full rounded-full bg-[#5E7A5E] transition-all"
-                      style={{ width: `${pod.progress}%` }}
-                    />
-                  </div>
-
-                  <div className="mt-4 space-y-2">
-                    {pod.members.map((m) => (
-                      <div
-                        key={m.role}
-                        className="flex items-center justify-between rounded-xl bg-[#FAF8F5] px-3.5 py-2.5 text-xs border border-[#E6DFD5]"
-                      >
-                        <div>
-                          <span className="font-bold text-[#2C1A10]">{m.role}:</span>{" "}
-                          <span className="font-medium text-[#3B2314]">{m.name}</span>
-                          <p className="text-[#6E5A4F]">{m.focus}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="mt-5 pt-4 border-t border-[#E6DFD5] flex items-center justify-between">
-                  <span className="inline-flex items-center gap-1 text-xs text-[#5C493E]">
-                    <ShieldCheck className="h-4 w-4 text-[#5E7A5E]" />
-                    <span>Stakeholder Verification Gate</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleStakeholderSignOff(pod.id)}
-                    disabled={pod.progress === 100}
-                    className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
-                      pod.progress === 100
-                        ? "bg-[#EEF4EE] text-[#3F5D3F] cursor-default"
-                        : "bg-[#3B2314] text-white hover:bg-[#2C1A10]"
-                    }`}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    <span>{pod.progress === 100 ? "Signed Off & Verified" : "Approve Sign-Off"}</span>
-                  </button>
-                </div>
+          <section className="space-y-4">
+            {podRequest.status === "done" && (
+              <p role="status" className="rounded-xl border border-[#B9DBA9] bg-[#EEF7E8] px-4 py-2.5 text-sm text-[#2F5A2F]">{podRequest.message}</p>
+            )}
+            {podRequest.status === "error" && (
+              <p role="alert" className="rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-4 py-2.5 text-sm text-[#8A2C1E]">{podRequest.message}</p>
+            )}
+            {orgPods.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                <Users className="mx-auto h-6 w-6 text-[#8FA58F]" />
+                <p className="mt-2 font-semibold text-[#2C1A10]">No pods yet</p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">Describe a need, pick a project and request a pod of verified students.</p>
+                <button type="button" onClick={() => setActiveTab("match")} className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline">
+                  Describe a need
+                </button>
               </div>
-            ))}
-          </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                {orgPods.map((pod) => (
+                  <article key={pod.id} aria-label={`Pod: ${pod.projectTitle}`} className="flex flex-col justify-between rounded-2xl border border-[#E6DFD5] bg-white p-6">
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5E7A5E]">
+                          <Users className="h-4 w-4" />
+                          <span>{pod.stage}</span>
+                        </span>
+                        <span className="text-xs font-bold text-[#3B2314]">{pod.progress}%</span>
+                      </div>
+                      <h3 className="mt-2 text-lg font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                      {pod.need && <p className="text-xs text-[#6E5A4F]">“{pod.need}”</p>}
+                      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[#EFEAE4]">
+                        <div className="h-full rounded-full bg-[#5E7A5E] transition-all" style={{ width: `${pod.progress}%` }} />
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {pod.members.map((m) => (
+                          <div key={m.role} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-3.5 py-2.5 text-xs">
+                            <span className="font-bold text-[#2C1A10]">{m.role}:</span>{" "}
+                            <span className="font-medium text-[#3B2314]">{m.name || "Looking for a verified student"}</span>
+                            <p className="text-[#6E5A4F]">{m.task}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-5 flex items-center justify-between border-t border-[#E6DFD5] pt-4">
+                      <span className="inline-flex items-center gap-1 text-xs text-[#5C493E]">
+                        <ShieldCheck className="h-4 w-4 text-[#5E7A5E]" />
+                        <span>Your sign-off issues the students' credentials</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleStakeholderSignOff(pod.id)}
+                        disabled={pod.signedOff}
+                        className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+                          pod.signedOff ? "cursor-default bg-[#EEF4EE] text-[#3F5D3F]" : "bg-[#3B2314] text-white hover:bg-[#2C1A10]"
+                        }`}
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        <span>{pod.signedOff ? "Signed off" : "Approve sign-off"}</span>
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         )}
 
         {activeTab === "career" && isYouth && (
@@ -3756,14 +3899,29 @@ export default function GeekArchiveApp() {
                 <h2 className="text-lg font-bold text-[#2C1A10]">Verified Career Proof</h2>
               </div>
               <p className="text-xs text-[#6E5A4F]">
-                Completed pod milestones turn into verifiable deliverables across code, design, and commercial execution.
+                When an organisation signs off a pod you worked in, it becomes a credential here — proof of real
+                work for a real client.
               </p>
-              <div className="space-y-3 rounded-xl bg-[#FAF8F5] p-4 border border-[#E6DFD5] text-xs">
-                <p className="font-bold text-[#2C1A10]">Shipped Pod Credentials</p>
-                <p className="text-[#5C493E]">• Developer: Pull requests, API stability &amp; live deployment</p>
-                <p className="text-[#5C493E]">• UI/UX Designer: Mobile-first wireframes &amp; usability flow</p>
-                <p className="text-[#5C493E]">• Business Student: SMME/NGO pricing &amp; handover playbook</p>
-              </div>
+              {myCredentials.length ? (
+                <ul className="space-y-2.5">
+                  {myCredentials.map((pod) => (
+                    <li key={pod.id} className="rounded-xl border border-[#B9DBA9] bg-[#EEF7E8] p-4">
+                      <p className="flex items-center gap-1.5 text-sm font-bold text-[#1F3D1F]">
+                        <BadgeCheck className="h-4 w-4" />
+                        {myRoleIn(pod)?.role} · {pod.projectTitle}
+                      </p>
+                      <p className="mt-0.5 text-xs text-[#2F472F]">
+                        Signed off by {pod.orgName}
+                        {pod.signedOffAt && ` on ${new Date(pod.signedOffAt).toLocaleDateString()}`}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-4 text-xs text-[#6E5A4F]">
+                  No credentials yet. Finish a pod and get the organisation&apos;s sign-off to earn your first one.
+                </p>
+              )}
             </div>
 
             <form
@@ -3810,12 +3968,13 @@ export default function GeekArchiveApp() {
                 type="submit"
                 className="rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
               >
-                Get Interview Readiness Score
+                Get practice feedback
               </button>
 
               {interviewFeedback && (
                 <div className="rounded-xl border border-[#C8DEC8] bg-[#EEF4EE] p-4 text-xs text-[#263B26] space-y-1">
-                  <p className="text-sm font-bold">Readiness Score: {interviewFeedback.score}</p>
+                  <p className="text-sm font-bold">Practice score: {interviewFeedback.score}</p>
+                  <p className="text-[11px] text-[#3F5D3F]">Automatic practice feedback based on length and concrete detail — not an official assessment.</p>
                   <p>{interviewFeedback.strength}</p>
                   <p>
                     <strong>Tip:</strong> {interviewFeedback.nextStep}
@@ -3955,6 +4114,35 @@ export default function GeekArchiveApp() {
             onDeleteAccount={handleDeleteAccount}
           />
         </Modal>
+      )}
+
+      {user && (
+        <Modal open={recoveringPassword} onClose={() => setRecoveringPassword(false)} title="Choose a new password" size="md">
+          <form onSubmit={handleSetNewPassword} className="space-y-3">
+            <label htmlFor="new-password" className="block text-xs font-semibold text-[#3B2314]">New password</label>
+            <input
+              id="new-password"
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              required
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+            />
+            {recoveryMessage.type === "error" && (
+              <p role="alert" className="text-xs text-[#8A2C1E]">{recoveryMessage.text}</p>
+            )}
+            <button type="submit" className="rounded-xl bg-[#163126] px-4 py-2.5 text-sm font-semibold text-[#C8DD9F]">
+              Save new password
+            </button>
+          </form>
+        </Modal>
+      )}
+      {recoveryMessage.type === "ok" && (
+        <p role="status" className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-xl bg-[#163126] px-4 py-2.5 text-sm font-semibold text-[#C8DD9F] shadow-lg">
+          {recoveryMessage.text}
+        </p>
       )}
 
       <ConsentGate

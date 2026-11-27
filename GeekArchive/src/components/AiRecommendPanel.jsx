@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { Clock, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { categoryLabel } from "../lib/categories";
+import { apiFetch } from "../lib/apiClient";
 
 /**
  * "Tell us what you need" → the AI reads the GitHub files of the most relevant
@@ -17,7 +18,7 @@ export default function AiRecommendPanel({ projects, orgType, defaultNeed = "", 
     e.preventDefault();
     setState({ status: "loading" });
     try {
-      const res = await fetch("/api/recommend-projects", {
+      const res = await apiFetch("/api/recommend-projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // Project details only — never students' names or contact details.

@@ -19,7 +19,14 @@ const deny = (status, error) => ({ ok: false, response: Response.json({ error },
  * @returns {Promise<{ ok: true, userId: string|null, role: string|null } | { ok: false, response: Response }>}
  */
 export async function requireUser(request, { requireVerified = false, roles = null } = {}) {
-  if (!authEnforced) return { ok: true, userId: null, role: null, demo: true };
+  if (!authEnforced) {
+    // Without Supabase there are no real accounts. That's only acceptable for local
+    // development or an explicitly enabled demo; a production deployment that's missing
+    // its keys must not hand out free API (and AI) access to anyone.
+    const demoAllowed = process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+    if (!demoAllowed) return deny(503, "This site isn't connected to its database yet.");
+    return { ok: true, userId: null, role: null, demo: true };
+  }
 
   const header = request.headers.get("authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";

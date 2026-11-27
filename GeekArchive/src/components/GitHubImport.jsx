@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { CheckCircle2, Github, GitFork, Loader2, Star } from "lucide-react";
 import { CATEGORIES } from "../lib/categories";
+import { apiFetch } from "../lib/apiClient";
 
 const MAX_PICKS = 6;
 
@@ -23,7 +24,7 @@ export default function GitHubImport({ defaultUsername = "", existingRepoUrls, o
     setPicked({});
     setState({ status: "loading" });
     try {
-      const res = await fetch(`/api/github-repos?username=${encodeURIComponent(username.trim())}`);
+      const res = await apiFetch(`/api/github-repos?username=${encodeURIComponent(username.trim())}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Couldn't load your repositories.");
       setState({ status: "loaded", repos: data.repos, username: data.username });

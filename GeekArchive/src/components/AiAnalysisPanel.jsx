@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { apiFetch } from "../lib/apiClient";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -42,7 +43,7 @@ export default function AiAnalysisPanel({ project }) {
   const run = async () => {
     setState({ status: "loading" });
     try {
-      const res = await fetch("/api/analyze-project", {
+      const res = await apiFetch("/api/analyze-project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // Only project details are sent — never the student's name or contact details.
