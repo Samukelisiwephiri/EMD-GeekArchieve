@@ -20,6 +20,8 @@ import {
   UserRoundPlus,
   Link2,
   MapPin,
+  Menu,
+  X,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
@@ -38,8 +40,58 @@ const uniqueList = (value) => {
     });
 };
 
+// --- Supabase <-> app mapping for the `prototypes` table ---------------------------
+// The embedding column is left out on purpose: it is large and the UI does not use it.
+const PROTOTYPE_COLUMNS =
+  "id, title, aliases, summary, description, repo_url, tech_stack, completion_pct, " +
+  "missing_modules, domain, suggested_price, is_illustrative, included_tailoring, " +
+  "created_by, owner_display_name, owner_role, created_at";
+
+const ROLE_LABELS = { youth: "Youth Pod Talent", organization: "SMME / NGO", admin: "SMME / NGO" };
+
+const fromPrototypeRow = (row) => ({
+  id: row.id,
+  title: row.title,
+  aliases: row.aliases || [],
+  summary: row.summary || "",
+  description: row.description || "",
+  repo: row.repo_url || "",
+  stack: row.tech_stack || [],
+  completion: row.completion_pct,
+  missing: row.missing_modules || [],
+  estimatedValue:
+    row.suggested_price == null ? null : `R${Number(row.suggested_price).toLocaleString("en-US")}`,
+  domain: row.domain || "",
+  illustrative: Boolean(row.is_illustrative),
+  includedTailoring: row.included_tailoring || [],
+  ownerId: row.created_by,
+  ownerName: row.owner_display_name || "",
+  ownerRole: ROLE_LABELS[row.owner_role],
+  postedAt: row.created_at,
+});
+
+// Only the fields a poster may set. Owner, name and role are stamped by the database.
+const toPrototypeRow = (project) => ({
+  ...(project.title ? { title: project.title } : {}),
+  summary: project.summary || "",
+  description: project.description || "",
+  repo_url: project.repo || null,
+  tech_stack: project.stack || [],
+  domain: project.domain || null,
+});
+
 // Demo mode has no real accounts, so a user is identified by their name.
 const demoUserId = (name) => `demo:${String(name || "").trim().toLowerCase()}`;
+
+// "Thandi Mokoena" -> "TM"
+const initialsOf = (name) =>
+  String(name || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0] || "")
+    .join("")
+    .toUpperCase() || "?";
 
 const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
 
@@ -223,7 +275,31 @@ export default function GeekArchiveApp() {
   );
 
   const [activeTab, setActiveTab] = useState("talent");
-  const [prototypes, setPrototypes] = useState(INITIAL_PROTOTYPES);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Close the mobile menu on Esc, or when the window grows to the desktop layout.
+  useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") setMobileMenuOpen(false);
+    };
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    const onResize = () => {
+      if (desktop.matches) setMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    desktop.addEventListener("change", onResize);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      desktop.removeEventListener("change", onResize);
+    };
+  }, [mobileMenuOpen]);
+  // With Supabase, projects come from the database (filtered by its access rules).
+  const [prototypes, setPrototypes] = useState(isSupabaseConfigured ? [] : INITIAL_PROTOTYPES);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsLoadError, setProjectsLoadError] = useState("");
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [projectError, setProjectError] = useState("");
   const [pods, setPods] = useState(SAMPLE_PODS);
   const [archiveQuery, setArchiveQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
@@ -334,6 +410,33 @@ export default function GeekArchiveApp() {
     };
   }, []);
 
+  // Load projects from Supabase whenever a real (non-demo) user signs in.
+  // Row-level security decides what comes back: SMMEs/NGOs get every active
+  // project; youth get only their own posts and projects they're assigned to.
+  const signedInUserId = user?.id && !user.id.startsWith("demo:") ? user.id : null;
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    setProjectsLoading(true);
+    setProjectsLoadError("");
+    supabase
+      .from("prototypes")
+      .select(PROTOTYPE_COLUMNS)
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setProjectsLoadError(`Could not load projects: ${error.message}`);
+        } else {
+          setPrototypes((data || []).map(fromPrototypeRow));
+        }
+        setProjectsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signedInUserId]);
+
   const handleAuthSubmit = async (e, providerLabel = "Email") => {
     if (e) e.preventDefault();
     setAuthError("");
@@ -402,8 +505,12 @@ export default function GeekArchiveApp() {
   };
 
   const handleSignOut = async () => {
-    if (supabase) await supabase.auth.signOut();
+    if (supabase) {
+      await supabase.auth.signOut();
+      setPrototypes([]); // The next person must only see what the database allows them to.
+    }
     setUser(null);
+    setProjectError("");
     setAuthPassword("");
     setAuthMode("signin");
     setShowAuthLanding(true);
@@ -498,10 +605,12 @@ export default function GeekArchiveApp() {
     });
   };
 
-  const handleIngestPrototype = (e) => {
+  const handleIngestPrototype = async (e) => {
     e.preventDefault();
     // SMMEs/NGOs only view projects; posting is for youth talent.
-    if (!isYouth || !newRepoTitle.trim()) return;
+    if (!isYouth || !newRepoTitle.trim() || projectSaving) return;
+    setProjectError("");
+
     const created = {
       id: `proto-${Date.now()}`,
       title: newRepoTitle.trim(),
@@ -518,37 +627,68 @@ export default function GeekArchiveApp() {
       ownerRole: user?.role,
       postedAt: new Date().toISOString(),
     };
-    // Only youth talent post projects, and they can only update their own.
-    const canEdit = (project) => project.ownerId === user?.id;
-    setPrototypes((prev) => {
-      const existing = prev.findIndex(
-        (project) =>
-          canEdit(project) &&
-          (project.title.toLowerCase() === created.title.toLowerCase() ||
-            (project.aliases || []).some(
-              (alias) => alias.toLowerCase() === created.title.toLowerCase()
-            ))
-      );
-      if (existing < 0) return [created, ...prev];
-      return prev.map((project, index) =>
-        index === existing
-          ? {
-              ...project,
-              summary: created.summary || project.summary,
-              description: created.description || project.description,
-              repo: created.repo || project.repo,
-              stack: created.stack.length ? created.stack : project.stack,
-              domain: created.domain || project.domain,
-            }
-          : project
-      );
-    });
-    setNewRepoTitle("");
-    setNewRepoUrl("");
-    setNewRepoDescription("");
-    setNewRepoStack("");
-    setAuditNote("");
-    setActiveTab("myprojects");
+    const titleKey = created.title.toLowerCase();
+    // Posting again with the same name updates the poster's own project, never someone else's.
+    const existing = prototypes.find(
+      (project) =>
+        project.ownerId === user?.id &&
+        (project.title.toLowerCase() === titleKey ||
+          (project.aliases || []).some((alias) => alias.toLowerCase() === titleKey))
+    );
+    const merged = existing && {
+      summary: created.summary || existing.summary,
+      description: created.description || existing.description,
+      repo: created.repo || existing.repo,
+      stack: created.stack.length ? created.stack : existing.stack,
+      domain: created.domain || existing.domain,
+    };
+
+    const resetForm = () => {
+      setNewRepoTitle("");
+      setNewRepoUrl("");
+      setNewRepoDescription("");
+      setNewRepoStack("");
+      setAuditNote("");
+      setActiveTab("myprojects");
+    };
+
+    if (supabase) {
+      if (!user?.id || user.id.startsWith("demo:")) {
+        setProjectError("Please sign in to post a project.");
+        return;
+      }
+      setProjectSaving(true);
+      try {
+        const request = existing
+          ? supabase
+              .from("prototypes")
+              .update(toPrototypeRow(merged))
+              .eq("id", existing.id)
+          : supabase
+              .from("prototypes")
+              .insert({ ...toPrototypeRow(created), created_by: user.id });
+        const { data, error } = await request.select(PROTOTYPE_COLUMNS).single();
+        if (error) throw error;
+        const saved = fromPrototypeRow(data);
+        setPrototypes((prev) =>
+          existing ? prev.map((project) => (project.id === saved.id ? saved : project)) : [saved, ...prev]
+        );
+        resetForm();
+      } catch (err) {
+        setProjectError(err?.message || "Could not save your project. Please try again.");
+      } finally {
+        setProjectSaving(false);
+      }
+      return;
+    }
+
+    // Demo mode: keep projects in memory only.
+    setPrototypes((prev) =>
+      existing
+        ? prev.map((project) => (project.id === existing.id ? { ...project, ...merged } : project))
+        : [created, ...prev]
+    );
+    resetForm();
   };
 
   const handleAddTalent = (e) => {
@@ -699,11 +839,17 @@ export default function GeekArchiveApp() {
           className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
         />
       </div>
+      {projectError && (
+        <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+          {projectError}
+        </p>
+      )}
       <button
         type="submit"
-        className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
+        disabled={projectSaving}
+        className="w-full rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
       >
-        Post my project
+        {projectSaving ? "Saving…" : "Post my project"}
       </button>
     </form>
   );
@@ -935,26 +1081,28 @@ export default function GeekArchiveApp() {
   return (
     <div className="min-h-screen bg-[#F4F7F1] text-[#163126]">
       <header className="sticky top-0 z-20 border-b border-[#DDE4D8] bg-[#F4F7F1]/95 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#163126] text-[#C8DD9F]">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#163126] text-[#C8DD9F]">
               <span className="text-xs font-black">GA</span>
             </div>
-            <div>
-              <span className="text-lg font-bold tracking-tight text-[#163126]">Geek Archive</span>
-              <span className="ml-2 hidden text-[10px] font-bold uppercase tracking-[0.14em] text-[#708078] sm:inline">
+            <div className="min-w-0 leading-tight">
+              <span className="block truncate text-lg font-bold tracking-tight text-[#163126]">Geek Archive</span>
+              <span className="hidden text-[10px] font-bold uppercase tracking-[0.14em] text-[#708078] xl:block">
                 Embedded Intelligence
               </span>
             </div>
           </div>
 
-          <nav className="flex flex-wrap items-center gap-1.5">
+          {/* Desktop navigation: one row, never wraps */}
+          <nav aria-label="Main" className="hidden items-center gap-1 lg:flex">
             {navTabs.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                aria-current={activeTab === tab.id ? "page" : undefined}
+                className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition ${
                   activeTab === tab.id
                     ? "bg-[#163126] text-[#C8DD9F]"
                     : "text-[#68766F] hover:bg-[#E8EEE5] hover:text-[#163126]"
@@ -965,20 +1113,30 @@ export default function GeekArchiveApp() {
             ))}
           </nav>
 
-          <div className="flex items-center gap-2">
+          {/* Desktop account area */}
+          <div className="hidden shrink-0 items-center gap-2 lg:flex">
             {user ? (
               <>
-                <div className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-3 py-1.5 text-xs">
-                  <span className="font-semibold text-[#2C1A10]">{user.name}</span>
-                  <span className="ml-1.5 text-[#5E7A5E] font-medium">• {user.role}</span>
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-[#C8DD9F] text-[11px] font-bold text-[#163126]"
+                  >
+                    {initialsOf(user.name)}
+                  </span>
+                  <div className="max-w-[150px] leading-tight">
+                    <p className="truncate text-xs font-semibold text-[#2C1A10]">{user.name}</p>
+                    <p className="truncate text-[11px] font-medium text-[#5E7A5E]">{user.role}</p>
+                  </div>
                 </div>
                 <button
                   type="button"
                   onClick={handleSignOut}
-                  className="inline-flex items-center gap-1 rounded-xl border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  aria-label="Sign Out"
+                  title="Sign out"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#D8CFC4] bg-white text-[#3B2314] hover:bg-[#FAF8F5]"
                 >
-                  <LogOut className="h-3.5 w-3.5" />
-                  <span>Sign Out</span>
+                  <LogOut className="h-4 w-4" />
                 </button>
               </>
             ) : (
@@ -992,10 +1150,101 @@ export default function GeekArchiveApp() {
               </button>
             )}
           </div>
+
+          {/* Mobile / tablet menu button */}
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-menu"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#D8CFC4] bg-white text-[#163126] hover:bg-[#FAF8F5] lg:hidden"
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
         </div>
+
+        {/* Mobile / tablet menu panel */}
+        {mobileMenuOpen && (
+          <div id="mobile-menu" className="border-t border-[#DDE4D8] bg-[#F4F7F1] lg:hidden">
+            <nav aria-label="Main" className="mx-auto flex max-w-6xl flex-col gap-1 px-4 py-3 sm:px-6">
+              {navTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    setMobileMenuOpen(false);
+                  }}
+                  aria-current={activeTab === tab.id ? "page" : undefined}
+                  className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold transition ${
+                    activeTab === tab.id
+                      ? "bg-[#163126] text-[#C8DD9F]"
+                      : "text-[#3E4F46] hover:bg-[#E8EEE5]"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+            <div className="mx-auto max-w-6xl border-t border-[#DDE4D8] px-4 py-3 sm:px-6">
+              {user ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#C8DD9F] text-xs font-bold text-[#163126]"
+                    >
+                      {initialsOf(user.name)}
+                    </span>
+                    <div className="min-w-0 leading-tight">
+                      <p className="truncate text-sm font-semibold text-[#2C1A10]">{user.name}</p>
+                      <p className="truncate text-xs font-medium text-[#5E7A5E]">{user.role}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleSignOut();
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setShowAuthLanding(true);
+                  }}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2.5 text-sm font-semibold text-white"
+                >
+                  <LogIn className="h-4 w-4" />
+                  <span>Sign In / Up</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
+        {(projectsLoading || projectsLoadError) && (
+          <p
+            role={projectsLoadError ? "alert" : "status"}
+            className={`mb-4 rounded-xl border px-4 py-2.5 text-xs ${
+              projectsLoadError
+                ? "border-[#E7C3BC] bg-[#FBEDEA] text-[#8A2C1E]"
+                : "border-[#DDE4D8] bg-white text-[#5C493E]"
+            }`}
+          >
+            {projectsLoadError || "Loading projects…"}
+          </p>
+        )}
         <section className="relative mb-8 overflow-hidden rounded-[28px] bg-[#163126] p-6 text-white shadow-[0_18px_50px_rgba(22,49,38,0.10)] sm:p-8">
           <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full border border-[#C8DD9F]/15" />
           <div className="pointer-events-none absolute -right-6 -top-10 h-36 w-36 rounded-full bg-[#C8DD9F]/[0.07]" />
