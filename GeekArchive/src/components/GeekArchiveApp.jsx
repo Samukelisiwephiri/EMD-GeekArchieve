@@ -24,6 +24,11 @@ import {
   X,
   Pencil,
   Trash2,
+  Mail,
+  MessageSquare,
+  Send,
+  Phone,
+  Inbox,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
@@ -81,6 +86,28 @@ const toPrototypeRow = (project) => ({
   tech_stack: project.stack || [],
   domain: project.domain || null,
 });
+
+// --- Supabase <-> app mapping for the `contact_requests` table ----------------------
+const CONTACT_COLUMNS =
+  "id, prototype_id, project_title, student_id, organization_id, organization_name, " +
+  "message, reply_email, reply_phone, status, created_at";
+
+const fromContactRow = (row) => ({
+  id: row.id,
+  projectId: row.prototype_id,
+  projectTitle: row.project_title || "",
+  studentId: row.student_id,
+  orgId: row.organization_id,
+  orgName: row.organization_name || "An organization",
+  message: row.message,
+  replyEmail: row.reply_email,
+  replyPhone: row.reply_phone || "",
+  status: row.status,
+  createdAt: row.created_at,
+});
+
+const CONTACT_MESSAGE_MIN = 10;
+const CONTACT_MESSAGE_MAX = 2000;
 
 // Demo mode has no real accounts, so a user is identified by their name.
 const demoUserId = (name) => `demo:${String(name || "").trim().toLowerCase()}`;
@@ -282,6 +309,22 @@ const INTERVIEW_PROMPTS = {
     "How did you shape the pricing, handover steps, and value proposition so a small business can adopt the tool within its first week?",
 };
 
+// Small count bubble on a menu tab (e.g. unread messages). Screen readers hear ", 2 unread".
+function TabBadge({ count }) {
+  if (!count) return null;
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="min-w-[18px] rounded-full bg-[#C2410C] px-1.5 py-0.5 text-center text-[10px] font-bold leading-none text-white"
+      >
+        {count > 9 ? "9+" : count}
+      </span>
+      <span className="sr-only">, {count} unread</span>
+    </>
+  );
+}
+
 export default function GeekArchiveApp() {
   const [showAuthLanding, setShowAuthLanding] = useState(true);
   const [authMode, setAuthMode] = useState("signin");
@@ -331,6 +374,15 @@ export default function GeekArchiveApp() {
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deletingProjectId, setDeletingProjectId] = useState(null);
+
+  // Contact requests from SMMEs/NGOs to students (one per organization per project).
+  const [contactRequests, setContactRequests] = useState([]);
+  const [contactFormProjectId, setContactFormProjectId] = useState(null);
+  const [contactDraft, setContactDraft] = useState({ message: "", email: "", phone: "" });
+  const [contactSending, setContactSending] = useState(false);
+  const [contactError, setContactError] = useState("");
+  const [respondingRequestId, setRespondingRequestId] = useState(null);
+  const [messagesError, setMessagesError] = useState("");
   const [pods, setPods] = useState(SAMPLE_PODS);
   const [archiveQuery, setArchiveQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
@@ -355,6 +407,7 @@ export default function GeekArchiveApp() {
         { id: "opportunities", label: "Matched opportunities" },
         { id: "talent", label: "My profile" },
         { id: "myprojects", label: "My projects" },
+        { id: "messages", label: "Messages" },
         { id: "pods", label: "My pods" },
         { id: "career", label: "Career proof" },
       ]
@@ -425,7 +478,13 @@ export default function GeekArchiveApp() {
         authUser.user_metadata?.full_name ||
         nameFromEmail(authUser.email) ||
         "Member";
-      setUser({ id: authUser.id, name, role, provider: authUser.app_metadata?.provider || "email" });
+      setUser({
+        id: authUser.id,
+        name,
+        role,
+        email: authUser.email || "",
+        provider: authUser.app_metadata?.provider || "email",
+      });
       setNewTalent((current) => ({ ...current, name }));
       setActiveTab(role === "Youth Pod Talent" ? "talent" : "match");
       setShowAuthLanding(false);
@@ -464,6 +523,26 @@ export default function GeekArchiveApp() {
           setPrototypes((data || []).map(fromPrototypeRow));
         }
         setProjectsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signedInUserId]);
+
+  // Load contact requests. RLS returns only requests this person sent (SMME/NGO)
+  // or received (student).
+  useEffect(() => {
+    if (!supabase || !signedInUserId) return undefined;
+    let cancelled = false;
+    setMessagesError("");
+    supabase
+      .from("contact_requests")
+      .select(CONTACT_COLUMNS)
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) setMessagesError(`Could not load messages: ${error.message}`);
+        else setContactRequests((data || []).map(fromContactRow));
       });
     return () => {
       cancelled = true;
@@ -528,6 +607,7 @@ export default function GeekArchiveApp() {
 
     setUser({
       id: demoUserId(derivedName),
+      email: isOAuth ? "" : authEmail.trim(),
       name: derivedName,
       role: authRole,
       provider: providerLabel,
@@ -540,11 +620,15 @@ export default function GeekArchiveApp() {
   const handleSignOut = async () => {
     if (supabase) {
       await supabase.auth.signOut();
-      setPrototypes([]); // The next person must only see what the database allows them to.
+      // The next person must only see what the database allows them to.
+      setPrototypes([]);
+      setContactRequests([]);
     }
     setUser(null);
     clearProjectForm();
     setConfirmDeleteId(null);
+    closeContactForm();
+    setMessagesError("");
     setAuthPassword("");
     setAuthMode("signin");
     setShowAuthLanding(true);
@@ -805,6 +889,119 @@ export default function GeekArchiveApp() {
     setConfirmDeleteId(null);
   };
 
+  // --- Contacting students ---------------------------------------------------------
+  const openContactForm = (project) => {
+    setContactFormProjectId(project.id);
+    setContactError("");
+    setContactDraft({
+      message: `Hi ${project.ownerName?.split(" ")[0] || "there"}, we're interested in "${project.title}" and would like to talk about working together.`,
+      email: user?.email && user.email.includes("@") ? user.email : "",
+      phone: "",
+    });
+  };
+
+  const closeContactForm = () => {
+    setContactFormProjectId(null);
+    setContactError("");
+    setContactDraft({ message: "", email: "", phone: "" });
+  };
+
+  // The request this SMME/NGO already sent about a project, if any.
+  const sentRequestFor = (projectId) =>
+    contactRequests.find((request) => request.projectId === projectId && request.orgId === user?.id);
+
+  const handleSendContactRequest = async (e, project) => {
+    e.preventDefault();
+    if (isYouth || contactSending) return;
+    const message = contactDraft.message.trim();
+    const email = contactDraft.email.trim();
+    const phone = contactDraft.phone.trim();
+    if (message.length < CONTACT_MESSAGE_MIN) {
+      setContactError(`Please write a message of at least ${CONTACT_MESSAGE_MIN} characters.`);
+      return;
+    }
+    if (sentRequestFor(project.id)) {
+      setContactError("You've already contacted this student about this project.");
+      return;
+    }
+    setContactError("");
+
+    if (supabase) {
+      if (!signedInUserId) {
+        setContactError("Please sign in to contact students.");
+        return;
+      }
+      setContactSending(true);
+      try {
+        // Student, organization name and project title are filled in by the database.
+        const { data, error } = await supabase
+          .from("contact_requests")
+          .insert({
+            prototype_id: project.id,
+            organization_id: user.id,
+            message,
+            reply_email: email,
+            reply_phone: phone || null,
+          })
+          .select(CONTACT_COLUMNS)
+          .single();
+        if (error) throw error;
+        setContactRequests((prev) => [fromContactRow(data), ...prev]);
+        closeContactForm();
+      } catch (err) {
+        setContactError(err?.message || "Could not send your message. Please try again.");
+      } finally {
+        setContactSending(false);
+      }
+      return;
+    }
+
+    // Demo mode: keep requests in memory.
+    setContactRequests((prev) => [
+      {
+        id: `contact-${Date.now()}`,
+        projectId: project.id,
+        projectTitle: project.title,
+        studentId: project.ownerId,
+        orgId: user?.id,
+        orgName: user?.name || "An organization",
+        message,
+        replyEmail: email,
+        replyPhone: phone,
+        status: "new",
+        createdAt: new Date().toISOString(),
+      },
+      ...prev,
+    ]);
+    closeContactForm();
+  };
+
+  // Student answers a request: "interested" or "declined".
+  const handleRespondToRequest = async (request, status) => {
+    if (!isYouth || request.studentId !== user?.id || respondingRequestId) return;
+    setMessagesError("");
+    if (supabase) {
+      setRespondingRequestId(request.id);
+      try {
+        const { data, error } = await supabase
+          .from("contact_requests")
+          .update({ status })
+          .eq("id", request.id)
+          .select(CONTACT_COLUMNS)
+          .single();
+        if (error) throw error;
+        const saved = fromContactRow(data);
+        setContactRequests((prev) => prev.map((r) => (r.id === saved.id ? saved : r)));
+      } catch (err) {
+        setMessagesError(err?.message || "Could not save your answer. Please try again.");
+      } finally {
+        setRespondingRequestId(null);
+      }
+      return;
+    }
+    setContactRequests((prev) => prev.map((r) => (r.id === request.id ? { ...r, status } : r)));
+  };
+
   const handleAddTalent = (e) => {
     e.preventDefault();
     const profile = {
@@ -894,6 +1091,12 @@ export default function GeekArchiveApp() {
         .toLowerCase()
         .includes(discoverQuery.trim().toLowerCase())
   );
+  // Requests this student has received, newest first; "new" ones count as unread.
+  const myContactRequests = contactRequests.filter(
+    (request) => isYouth && user?.id && request.studentId === user.id
+  );
+  const unreadRequestCount = myContactRequests.filter((request) => request.status === "new").length;
+
   const clearDiscoverFilters = () => {
     setDiscoverQuery("");
     setDiscoverSkill("");
@@ -1254,13 +1457,14 @@ export default function GeekArchiveApp() {
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
                 aria-current={activeTab === tab.id ? "page" : undefined}
-                className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold transition ${
                   activeTab === tab.id
                     ? "bg-[#163126] text-[#C8DD9F]"
                     : "text-[#68766F] hover:bg-[#E8EEE5] hover:text-[#163126]"
                 }`}
               >
                 {tab.label}
+                <TabBadge count={tab.id === "messages" ? unreadRequestCount : 0} />
               </button>
             ))}
           </nav>
@@ -1329,13 +1533,14 @@ export default function GeekArchiveApp() {
                     setMobileMenuOpen(false);
                   }}
                   aria-current={activeTab === tab.id ? "page" : undefined}
-                  className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold transition ${
+                  className={`flex w-full items-center justify-between rounded-xl px-4 py-3 text-left text-sm font-semibold transition ${
                     activeTab === tab.id
                       ? "bg-[#163126] text-[#C8DD9F]"
                       : "text-[#3E4F46] hover:bg-[#E8EEE5]"
                   }`}
                 >
                   {tab.label}
+                  <TabBadge count={tab.id === "messages" ? unreadRequestCount : 0} />
                 </button>
               ))}
             </nav>
@@ -1803,9 +2008,273 @@ export default function GeekArchiveApp() {
                         View project
                       </a>
                     )}
+
+                    <div className="mt-4 border-t border-[#EEE8E1] pt-4">
+                      {(() => {
+                        const sent = sentRequestFor(proto.id);
+                        if (sent) {
+                          const statusText = {
+                            new: "Message sent · waiting for the student to reply",
+                            interested: `${proto.ownerName || "The student"} is interested and will contact you at ${sent.replyEmail}`,
+                            declined: `${proto.ownerName || "The student"} isn't available for this right now`,
+                          }[sent.status];
+                          return (
+                            <p
+                              role="status"
+                              className={`inline-flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ${
+                                sent.status === "interested"
+                                  ? "bg-[#EEF4EE] text-[#2F472F]"
+                                  : sent.status === "declined"
+                                  ? "bg-[#F5F1EC] text-[#6E5A4F]"
+                                  : "bg-[#FBF5E6] text-[#6B5320]"
+                              }`}
+                            >
+                              {sent.status === "interested" ? (
+                                <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
+                              ) : (
+                                <Mail className="mt-px h-3.5 w-3.5 shrink-0" />
+                              )}
+                              <span>{statusText}</span>
+                            </p>
+                          );
+                        }
+                        if (contactFormProjectId !== proto.id) {
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => openContactForm(proto)}
+                              aria-label={`Contact ${proto.ownerName || "the student"} about ${proto.title}`}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
+                            >
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              Contact student
+                            </button>
+                          );
+                        }
+                        return (
+                          <form
+                            onSubmit={(e) => handleSendContactRequest(e, proto)}
+                            aria-label={`Message to ${proto.ownerName || "the student"}`}
+                            className="space-y-3"
+                          >
+                            <p className="text-xs text-[#6E5A4F]">
+                              Your message and contact details go to {proto.ownerName || "the student"} only. Their
+                              own contact details stay private until they reply.
+                            </p>
+                            <label className="block">
+                              <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Message</span>
+                              <textarea
+                                rows={4}
+                                required
+                                minLength={CONTACT_MESSAGE_MIN}
+                                maxLength={CONTACT_MESSAGE_MAX}
+                                value={contactDraft.message}
+                                onChange={(e) => setContactDraft((d) => ({ ...d, message: e.target.value }))}
+                                className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3 text-sm"
+                              />
+                            </label>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Your email</span>
+                                <input
+                                  type="email"
+                                  required
+                                  value={contactDraft.email}
+                                  onChange={(e) => setContactDraft((d) => ({ ...d, email: e.target.value }))}
+                                  placeholder="you@business.co.za"
+                                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
+                                />
+                              </label>
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-semibold text-[#3B2314]">
+                                  Phone <span className="font-normal text-[#8A786D]">(optional)</span>
+                                </span>
+                                <input
+                                  type="tel"
+                                  value={contactDraft.phone}
+                                  onChange={(e) => setContactDraft((d) => ({ ...d, phone: e.target.value }))}
+                                  placeholder="e.g. 071 234 5678"
+                                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
+                                />
+                              </label>
+                            </div>
+                            {contactError && (
+                              <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                                {contactError}
+                              </p>
+                            )}
+                            <div className="flex gap-2">
+                              <button
+                                type="submit"
+                                disabled={contactSending}
+                                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#5E7A5E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+                              >
+                                <Send className="h-3.5 w-3.5" />
+                                {contactSending ? "Sending…" : "Send message"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={closeContactForm}
+                                disabled={contactSending}
+                                className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </form>
+                        );
+                      })()}
+                    </div>
                   </article>
                 ))}
               </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "messages" && isYouth && (
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#E6DFD5] bg-white p-5">
+              <div>
+                <h2 className="text-lg font-bold text-[#2C1A10]">Messages</h2>
+                <p className="mt-1 text-xs text-[#6E5A4F]">
+                  SMMEs, NGOs and sponsors who want to talk about your projects. Your own contact details
+                  stay private until you reply.
+                </p>
+              </div>
+              <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
+                {unreadRequestCount ? `${unreadRequestCount} new` : `${myContactRequests.length} total`}
+              </span>
+            </div>
+
+            {messagesError && (
+              <p role="alert" className="rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-4 py-2.5 text-xs text-[#8A2C1E]">
+                {messagesError}
+              </p>
+            )}
+
+            {myContactRequests.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
+                <Inbox className="mx-auto h-6 w-6 text-[#8FA58F]" />
+                <p className="mt-2 font-semibold text-[#2C1A10]">No messages yet</p>
+                <p className="mt-1 text-sm text-[#6E5A4F]">
+                  When an organization wants to talk about one of your projects, it will show up here.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("myprojects")}
+                  className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline"
+                >
+                  Go to My projects
+                </button>
+              </div>
+            ) : (
+              myContactRequests.map((request) => (
+                <article
+                  key={request.id}
+                  aria-label={`Message from ${request.orgName} about ${request.projectTitle}`}
+                  className={`rounded-2xl border bg-white p-5 ${
+                    request.status === "new" ? "border-[#E2C88F] ring-1 ring-[#F2E3BF]" : "border-[#E6DFD5]"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-base font-bold text-[#2C1A10]">{request.orgName}</p>
+                      <p className="text-xs text-[#6E5A4F]">
+                        About <span className="font-semibold text-[#3B2314]">{request.projectTitle}</span>
+                        {request.createdAt && <> · {new Date(request.createdAt).toLocaleDateString()}</>}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        request.status === "new"
+                          ? "bg-[#FBF5E6] text-[#6B5320]"
+                          : request.status === "interested"
+                          ? "bg-[#EEF4EE] text-[#2F472F]"
+                          : "bg-[#F5F1EC] text-[#6E5A4F]"
+                      }`}
+                    >
+                      {request.status === "new"
+                        ? "New"
+                        : request.status === "interested"
+                        ? "You're interested"
+                        : "Declined"}
+                    </span>
+                  </div>
+
+                  <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-[#3B2314]">
+                    {request.message}
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[#5C493E]">
+                    <a
+                      href={`mailto:${request.replyEmail}?subject=${encodeURIComponent(`Re: ${request.projectTitle}`)}`}
+                      className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                    >
+                      <Mail className="h-3.5 w-3.5" />
+                      {request.replyEmail}
+                    </a>
+                    {request.replyPhone && (
+                      <a
+                        href={`tel:${request.replyPhone.replace(/[^\d+]/g, "")}`}
+                        className="inline-flex items-center gap-1 font-semibold text-[#3F5D3F] hover:underline"
+                      >
+                        <Phone className="h-3.5 w-3.5" />
+                        {request.replyPhone}
+                      </a>
+                    )}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#EEE8E1] pt-4">
+                    {request.status === "new" ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleRespondToRequest(request, "interested")}
+                          disabled={respondingRequestId === request.id}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-[#5E7A5E] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#4C654C] disabled:opacity-70"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          I&apos;m interested
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRespondToRequest(request, "declined")}
+                          disabled={respondingRequestId === request.id}
+                          className="rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:opacity-70"
+                        >
+                          Not now
+                        </button>
+                      </>
+                    ) : request.status === "interested" ? (
+                      <>
+                        <a
+                          href={`mailto:${request.replyEmail}?subject=${encodeURIComponent(`Re: ${request.projectTitle}`)}`}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                          Reply by email
+                        </a>
+                        <p className="text-xs text-[#6E5A4F]">
+                          {request.orgName} has been told you&apos;re interested.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-xs text-[#6E5A4F]">You declined this request.</p>
+                        <button
+                          type="button"
+                          onClick={() => handleRespondToRequest(request, "interested")}
+                          disabled={respondingRequestId === request.id}
+                          className="text-xs font-semibold text-[#3F5D3F] hover:underline"
+                        >
+                          Changed your mind? Mark as interested
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </article>
+              ))
             )}
           </section>
         )}

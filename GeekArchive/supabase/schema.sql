@@ -629,3 +629,105 @@ grant execute on function public.has_assigned_prototype(uuid, uuid) to authentic
 grant execute on function public.is_matched_talent(uuid, uuid) to authenticated;
 grant execute on function public.request_youth_pod(text, text, uuid) to authenticated;
 grant execute on function public.sign_off_youth_pod(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------------------
+-- Contact requests: an SMME/NGO messages the student who posted a project.
+-- The student's own contact details are never exposed; the organization shares
+-- a reply email (and optional phone), and the student answers in the app.
+-- ---------------------------------------------------------------------------------
+create table if not exists public.contact_requests (
+  id uuid primary key default gen_random_uuid(),
+  prototype_id uuid not null references public.prototypes(id) on delete cascade,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  organization_id uuid not null references public.profiles(id) on delete cascade,
+  organization_name text,
+  project_title text,
+  message text not null check (char_length(trim(message)) between 10 and 2000),
+  reply_email text not null check (reply_email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'),
+  reply_phone text check (reply_phone is null or char_length(reply_phone) <= 30),
+  status text not null default 'new' check (status in ('new', 'interested', 'declined')),
+  created_at timestamptz not null default now(),
+  unique (prototype_id, organization_id)
+);
+
+create index if not exists contact_requests_student_idx on public.contact_requests(student_id);
+create index if not exists contact_requests_organization_idx on public.contact_requests(organization_id);
+
+-- On insert: the sender, the recipient student, the organization name and the project
+-- title all come from the database, never from the browser. On update: only the
+-- status may change.
+create or replace function public.stamp_contact_request()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  project_owner uuid;
+  project_owner_role text;
+  project_name text;
+begin
+  if tg_op = 'UPDATE' then
+    new.id := old.id;
+    new.prototype_id := old.prototype_id;
+    new.student_id := old.student_id;
+    new.organization_id := old.organization_id;
+    new.organization_name := old.organization_name;
+    new.project_title := old.project_title;
+    new.message := old.message;
+    new.reply_email := old.reply_email;
+    new.reply_phone := old.reply_phone;
+    new.created_at := old.created_at;
+    return new;
+  end if;
+
+  select p.created_by, p.owner_role, p.title
+    into project_owner, project_owner_role, project_name
+    from public.prototypes p
+   where p.id = new.prototype_id and p.active;
+
+  if project_owner is null or project_owner_role <> 'youth' then
+    raise exception 'You can only contact students about projects they posted';
+  end if;
+
+  new.organization_id := auth.uid();
+  new.student_id := project_owner;
+  new.project_title := project_name;
+  new.status := 'new';
+  new.created_at := now();
+  select pr.display_name into new.organization_name
+    from public.profiles pr where pr.id = auth.uid();
+  return new;
+end;
+$$;
+
+drop trigger if exists stamp_contact_request on public.contact_requests;
+create trigger stamp_contact_request
+  before insert or update on public.contact_requests
+  for each row execute procedure public.stamp_contact_request();
+
+alter table public.contact_requests enable row level security;
+
+-- Only the organization that sent a request and the student who received it can see it.
+drop policy if exists contact_requests_read_participants on public.contact_requests;
+create policy contact_requests_read_participants on public.contact_requests
+  for select to authenticated
+  using (organization_id = auth.uid() or student_id = auth.uid());
+
+-- Only SMMEs/NGOs can send, and only as themselves.
+drop policy if exists contact_requests_insert_organization on public.contact_requests;
+create policy contact_requests_insert_organization on public.contact_requests
+  for insert to authenticated
+  with check (
+    public.get_current_profile_role() = 'organization'
+    and organization_id = auth.uid()
+  );
+
+-- Only the receiving student can answer (the trigger limits changes to `status`).
+drop policy if exists contact_requests_update_student on public.contact_requests;
+create policy contact_requests_update_student on public.contact_requests
+  for update to authenticated
+  using (student_id = auth.uid())
+  with check (student_id = auth.uid());
+
+grant select, insert, update on public.contact_requests to authenticated;
