@@ -462,6 +462,16 @@ create policy talent_profiles_update_self on public.talent_profiles
     and public.get_current_profile_role() = 'youth'
   );
 
+-- Students can delete their own talent profile (their account, projects and
+-- messages are separate and stay).
+drop policy if exists talent_profiles_delete_self on public.talent_profiles;
+create policy talent_profiles_delete_self on public.talent_profiles
+  for delete to authenticated
+  using (
+    user_id = auth.uid()
+    and public.get_current_profile_role() = 'youth'
+  );
+
 drop policy if exists pod_members_read_participant on public.youth_pod_members;
 create policy pod_members_read_participant on public.youth_pod_members
   for select to authenticated
@@ -622,7 +632,7 @@ grant select, insert, update, delete on public.prototypes to authenticated;
 grant select, insert on public.problem_briefs to authenticated;
 grant select, update on public.youth_pods to authenticated;
 grant select on public.youth_pod_members to authenticated;
-grant select, insert, update on public.talent_profiles to authenticated;
+grant select, insert, update, delete on public.talent_profiles to authenticated;
 grant execute on function public.get_current_profile_role() to authenticated;
 grant execute on function public.is_pod_member(uuid, uuid) to authenticated;
 grant execute on function public.has_assigned_prototype(uuid, uuid) to authenticated;

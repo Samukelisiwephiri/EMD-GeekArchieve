@@ -449,6 +449,8 @@ export default function GeekArchiveApp() {
   const [editingTalent, setEditingTalent] = useState(false);
   const [talentSaving, setTalentSaving] = useState(false);
   const [talentError, setTalentError] = useState("");
+  const [confirmDeleteTalent, setConfirmDeleteTalent] = useState(false);
+  const [talentDeleting, setTalentDeleting] = useState(false);
   const showTalentForm = !ownTalentProfile || editingTalent;
 
   const youthMatchedMember = user?.id
@@ -679,6 +681,7 @@ export default function GeekArchiveApp() {
     setUser(null);
     setEditingTalent(false);
     setTalentError("");
+    setConfirmDeleteTalent(false);
     clearProjectForm();
     setConfirmDeleteId(null);
     closeContactForm();
@@ -1161,6 +1164,48 @@ export default function GeekArchiveApp() {
     setTalentError("");
     setNewTalent(talentFormFrom(null));
     setEditingTalent(false);
+  };
+
+  // Deleting the profile only removes the student from pod matching. Their account,
+  // projects and messages stay, and they can create a new profile at any time.
+  const handleDeleteTalent = async () => {
+    if (!isYouth || !ownTalentProfile || talentDeleting) return;
+    setTalentError("");
+    if (supabase) {
+      if (!signedInUserId) {
+        setTalentError("Please sign in to delete your profile.");
+        return;
+      }
+      setTalentDeleting(true);
+      try {
+        const { data, error } = await supabase
+          .from("talent_profiles")
+          .delete()
+          .eq("user_id", user.id)
+          .select("user_id");
+        if (error) throw error;
+        if (!data?.length) throw new Error("Your profile could not be deleted.");
+      } catch (err) {
+        setTalentError(err?.message || "Could not delete your profile. Please try again.");
+        setTalentDeleting(false);
+        setConfirmDeleteTalent(false);
+        return;
+      }
+      setTalentDeleting(false);
+    }
+    setTalentProfiles((current) => current.filter((profile) => profile.userId !== user.id));
+    // Take the student out of any suggested pod they were matched into.
+    setMatchedResult((current) => ({
+      ...current,
+      pod: current.pod.map((member) =>
+        member.profile?.userId === user.id
+          ? { ...member, profile: null, assignee: "No profile yet — add talent" }
+          : member
+      ),
+    }));
+    setNewTalent(talentFormFrom(null));
+    setEditingTalent(false);
+    setConfirmDeleteTalent(false);
   };
 
   const handleStakeholderSignOff = (podId) => {
@@ -2835,14 +2880,31 @@ export default function GeekArchiveApp() {
                           {profile.availability}
                         </span>
                         {!editingTalent && (
-                          <button
-                            type="button"
-                            onClick={handleStartEditTalent}
-                            className="inline-flex items-center gap-1 rounded-lg border border-[#D8CFC4] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                            Edit profile
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmDeleteTalent(false);
+                                handleStartEditTalent();
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-[#D8CFC4] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                              Edit profile
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTalentError("");
+                                setConfirmDeleteTalent(true);
+                              }}
+                              aria-label="Delete profile"
+                              className="inline-flex items-center gap-1 rounded-lg border border-[#E7C3BC] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#8A2C1E] hover:bg-[#FBEDEA]"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              <span className="hidden sm:inline">Delete</span>
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
@@ -2876,6 +2938,41 @@ export default function GeekArchiveApp() {
                         </span>
                       )}
                     </div>
+                    {!showTalentForm && talentError && (
+                      <p role="alert" className="mt-3 rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                        {talentError}
+                      </p>
+                    )}
+                    {confirmDeleteTalent && !editingTalent && (
+                      <div
+                        role="alertdialog"
+                        aria-label="Confirm deleting your profile"
+                        className="mt-4 rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-3.5 py-3"
+                      >
+                        <p className="text-xs font-medium text-[#8A2C1E]">
+                          Delete your talent profile? You&apos;ll stop being matched to new project pods.
+                          Your account, projects and messages stay, and you can create a new profile any time.
+                        </p>
+                        <div className="mt-2.5 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleDeleteTalent}
+                            disabled={talentDeleting}
+                            className="rounded-lg bg-[#A33A2A] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#8A2C1E] disabled:opacity-70"
+                          >
+                            {talentDeleting ? "Deleting…" : "Yes, delete my profile"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTalent(false)}
+                            disabled={talentDeleting}
+                            className="rounded-lg border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314]"
+                          >
+                            Keep it
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </article>
                 ))
               )}
