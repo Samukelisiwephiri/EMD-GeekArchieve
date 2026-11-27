@@ -13,7 +13,7 @@ const csp = [
   "script-src 'self' 'unsafe-inline'", // Next.js inlines its bootstrap script
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://i.ytimg.com https://avatars.githubusercontent.com",
-  "media-src 'self' https:",
+  "media-src 'self' blob: https:", // blob: = a just-uploaded video in demo mode
   "font-src 'self' data:",
   `connect-src 'self' ${supabaseUrl} ${supabaseWs}`.trim(),
   "frame-src https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com",

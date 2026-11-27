@@ -34,6 +34,7 @@ import {
   Lock,
   BadgeCheck,
   UserRound,
+  Upload,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
@@ -51,6 +52,14 @@ import AiRecommendPanel from "./AiRecommendPanel";
 import LandingSections, { EventBadge } from "./LandingSections";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
+import {
+  VIDEO_ACCEPT,
+  checkVideoFile,
+  hasDemoVideo,
+  removeAllDemoVideos,
+  removeDemoVideo,
+  uploadDemoVideo,
+} from "../lib/demoVideos";
 
 // Comma-separated input -> trimmed list without blanks or case-insensitive duplicates.
 const uniqueList = (value) => {
@@ -70,7 +79,7 @@ const uniqueList = (value) => {
 // The embedding column is left out on purpose: it is large and the UI does not use it.
 const PROTOTYPE_COLUMNS =
   "id, title, aliases, summary, description, repo_url, tech_stack, completion_pct, " +
-  "missing_modules, domain, demo_video_url, category, showcased, suggested_price, is_illustrative, included_tailoring, " +
+  "missing_modules, domain, demo_video_url, demo_video_path, category, showcased, suggested_price, is_illustrative, included_tailoring, " +
   "created_by, owner_display_name, owner_role, created_at";
 
 const ROLE_LABELS = { youth: "Youth Pod Talent", organization: "SMME / NGO", admin: "SMME / NGO" };
@@ -83,6 +92,7 @@ const fromPrototypeRow = (row) => ({
   description: row.description || "",
   repo: row.repo_url || "",
   demoVideo: row.demo_video_url || "",
+  demoVideoPath: row.demo_video_path || "",
   category: row.category || "",
   showcased: row.showcased !== false,
   stack: row.tech_stack || [],
@@ -106,6 +116,7 @@ const toPrototypeRow = (project) => ({
   description: project.description || "",
   repo_url: project.repo || null,
   demo_video_url: project.demoVideo || null,
+  demo_video_path: project.demoVideoPath || null,
   category: project.category || null,
   ...(typeof project.showcased === "boolean" ? { showcased: project.showcased } : {}),
   tech_stack: project.stack || [],
@@ -516,6 +527,9 @@ export default function GeekArchiveApp() {
   const [newRepoTitle, setNewRepoTitle] = useState("");
   const [newRepoUrl, setNewRepoUrl] = useState("");
   const [newRepoVideo, setNewRepoVideo] = useState("");
+  // Uploaded demo video for the form: a storage path (Supabase) or a blob: URL (demo mode).
+  const [newRepoVideoPath, setNewRepoVideoPath] = useState("");
+  const [videoUploading, setVideoUploading] = useState(false);
   const [newRepoCategory, setNewRepoCategory] = useState("");
   const [newRepoDescription, setNewRepoDescription] = useState("");
   const [newRepoStack, setNewRepoStack] = useState("");
@@ -899,7 +913,8 @@ export default function GeekArchiveApp() {
     const rankedProjects = prototypes
       .filter(
         (project) =>
-          project.ownerRole !== "Youth Pod Talent" || (project.showcased !== false && canSeeStudentWork(project.ownerId))
+          project.ownerRole !== "Youth Pod Talent" ||
+          (project.showcased !== false && hasDemoVideo(project) && canSeeStudentWork(project.ownerId))
       )
       .map((project) => {
         const searchable = [
@@ -986,6 +1001,7 @@ export default function GeekArchiveApp() {
       description: newRepoDescription.trim(),
       repo: parseGitHubRepo(newRepoUrl)?.url || newRepoUrl.trim(),
       demoVideo: newRepoVideo.trim(),
+      demoVideoPath: newRepoVideoPath,
       // Pick from the form, or guess from what they wrote.
       category: newRepoCategory || suggestCategory(newRepoTitle, newRepoDescription, newRepoStack, auditNote),
       showcased: true,
@@ -1003,8 +1019,16 @@ export default function GeekArchiveApp() {
       setProjectError("The GitHub link should look like https://github.com/your-name/your-repo");
       return;
     }
+    if (videoUploading) {
+      setProjectError("Your demo video is still uploading. Wait for it to finish, then save.");
+      return;
+    }
     if (created.demoVideo && !toVideoEmbed(created.demoVideo)) {
       setProjectError(`That demo video link can't be played. Use ${SUPPORTED_VIDEO_HINT}.`);
+      return;
+    }
+    if (!created.demoVideoPath && !created.demoVideo) {
+      setProjectError("Add a demo video of your project. Organisations only see projects with a demo.");
       return;
     }
     const titleKey = created.title.toLowerCase();
@@ -1035,6 +1059,7 @@ export default function GeekArchiveApp() {
         description: created.description,
         repo: created.repo,
         demoVideo: created.demoVideo,
+        demoVideoPath: created.demoVideoPath,
         category: created.category,
         stack: created.stack,
         domain: created.domain,
@@ -1047,6 +1072,7 @@ export default function GeekArchiveApp() {
         description: created.description || existing.description,
         repo: created.repo || existing.repo,
         demoVideo: created.demoVideo || existing.demoVideo,
+        demoVideoPath: created.demoVideoPath || existing.demoVideoPath,
         category: newRepoCategory || existing.category || created.category,
         stack: created.stack.length ? created.stack : existing.stack,
         domain: created.domain || existing.domain,
@@ -1054,6 +1080,10 @@ export default function GeekArchiveApp() {
     }
 
     const resetForm = () => {
+      // The project now points at the new video, so the one it replaced can go.
+      if (existing?.demoVideoPath && existing.demoVideoPath !== merged.demoVideoPath) {
+        removeDemoVideo(existing.demoVideoPath);
+      }
       clearProjectForm();
       setActiveTab("myprojects");
     };
@@ -1115,6 +1145,7 @@ export default function GeekArchiveApp() {
       description: r.description || "",
       repo: r.url,
       demoVideo: "",
+      demoVideoPath: "", // hidden from organisations until the student adds a demo video
       stack: uniqueList([r.language, ...(r.topics || []).slice(0, 5)].filter(Boolean).join(",")),
       completion: null,
       missing: [],
@@ -1156,10 +1187,57 @@ export default function GeekArchiveApp() {
     setPrototypes((prev) => prev.map((p) => (p.id === project.id ? { ...p, showcased } : p)));
   };
 
+  // The video the project being edited already has (kept until a save replaces it).
+  const savedVideoPath = editingProjectId
+    ? prototypes.find((p) => p.id === editingProjectId)?.demoVideoPath || ""
+    : "";
+
+  // Deletes a video uploaded in the form that no saved project uses.
+  const discardUnsavedVideo = (path = newRepoVideoPath) => {
+    if (path && path !== savedVideoPath) removeDemoVideo(path);
+  };
+
+  const handleVideoFileChosen = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // so choosing the same file again still triggers a change
+    if (!file || videoUploading) return;
+    setProjectError("");
+    const problem = checkVideoFile(file);
+    if (problem) {
+      setProjectError(problem);
+      return;
+    }
+    if (supabase && (!user?.id || user.id.startsWith("demo:"))) {
+      setProjectError("Please sign in to upload a video.");
+      return;
+    }
+    setVideoUploading(true);
+    try {
+      const path = await uploadDemoVideo(file, user?.id);
+      discardUnsavedVideo();
+      setNewRepoVideoPath(path);
+    } catch (err) {
+      setProjectError(err?.message || "Upload failed. Please try again.");
+    } finally {
+      setVideoUploading(false);
+    }
+  };
+
+  const handleRemoveVideo = () => {
+    discardUnsavedVideo();
+    setNewRepoVideoPath("");
+  };
+
+  const cancelProjectForm = () => {
+    discardUnsavedVideo();
+    clearProjectForm();
+  };
+
   const clearProjectForm = () => {
     setNewRepoTitle("");
     setNewRepoUrl("");
     setNewRepoVideo("");
+    setNewRepoVideoPath("");
     setNewRepoCategory("");
     setNewRepoDescription("");
     setNewRepoStack("");
@@ -1175,13 +1253,15 @@ export default function GeekArchiveApp() {
     );
 
   const handleStartEditProject = (project) => {
-    if (project.ownerId !== user?.id) return;
+    if (project.ownerId !== user?.id || videoUploading) return;
+    discardUnsavedVideo();
     setEditingProjectId(project.id);
     setConfirmDeleteId(null);
     setProjectError("");
     setNewRepoTitle(project.title);
     setNewRepoUrl(project.repo || "");
     setNewRepoVideo(project.demoVideo || "");
+    setNewRepoVideoPath(project.demoVideoPath || "");
     setNewRepoCategory(project.category || "");
     setNewRepoDescription(project.description || "");
     setNewRepoStack((project.stack || []).join(", "));
@@ -1210,9 +1290,10 @@ export default function GeekArchiveApp() {
       }
       setDeletingProjectId(null);
     }
+    removeDemoVideo(project.demoVideoPath);
     setPrototypes((prev) => prev.filter((p) => p.id !== project.id));
     syncMatchedPrototype(project.id, null);
-    if (editingProjectId === project.id) clearProjectForm();
+    if (editingProjectId === project.id) cancelProjectForm();
     setConfirmDeleteId(null);
   };
 
@@ -1594,7 +1675,11 @@ export default function GeekArchiveApp() {
   };
 
   const visiblePrototypes = prototypes.filter((proto) => {
-    if (proto.ownerRole === "Youth Pod Talent" && (proto.showcased === false || !canSeeStudentWork(proto.ownerId))) return false;
+    if (
+      proto.ownerRole === "Youth Pod Talent" &&
+      (proto.showcased === false || !hasDemoVideo(proto) || !canSeeStudentWork(proto.ownerId))
+    )
+      return false;
     const searchable = [
       proto.title,
       proto.domain,
@@ -1734,9 +1819,12 @@ export default function GeekArchiveApp() {
     if (!user?.id) return;
     const id = user.id;
     if (supabase) {
+      // Videos first, while the user can still sign requests to their own folder.
+      await removeAllDemoVideos(id).catch(() => {});
       const { error } = await supabase.rpc("delete_my_account");
       if (error) throw error;
     } else {
+      prototypes.filter((p) => p.ownerId === id).forEach((p) => removeDemoVideo(p.demoVideoPath));
       setTalentProfiles((current) => current.filter((p) => p.userId !== id));
       setPrototypes((current) => current.filter((p) => p.ownerId !== id));
       setContactRequests((current) => current.filter((r) => r.studentId !== id && r.orgId !== id));
@@ -1774,7 +1862,9 @@ export default function GeekArchiveApp() {
     ? {
         userId: viewProfileUserId,
         profile: talentDirectory.find((p) => p.userId === viewProfileUserId) || null,
-        projects: prototypes.filter((p) => p.ownerId === viewProfileUserId && p.showcased !== false),
+        projects: prototypes.filter(
+          (p) => p.ownerId === viewProfileUserId && p.showcased !== false && hasDemoVideo(p)
+        ),
       }
     : null;
   if (viewedProfile) {
@@ -1792,7 +1882,10 @@ export default function GeekArchiveApp() {
   // SMMEs/NGOs only ever see the projects students chose to show.
   const youthPostedProjects = prototypes.filter(
     (proto) =>
-      proto.ownerRole === "Youth Pod Talent" && proto.showcased !== false && canSeeStudentWork(proto.ownerId)
+      proto.ownerRole === "Youth Pod Talent" &&
+      proto.showcased !== false &&
+      hasDemoVideo(proto) &&
+      canSeeStudentWork(proto.ownerId)
   );
   // Filter options come from what students actually posted. Matching ignores case,
   // so "react" and "React" count as the same skill.
@@ -1895,22 +1988,79 @@ export default function GeekArchiveApp() {
         </select>
         <p className="mt-1 text-[11px] text-[#8A786D]">Organisations browse by category, e.g. Cybersecurity or Finance.</p>
       </div>
-      <div>
-        <label htmlFor="project-video" className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-[#3B2314]">
+      <fieldset className="rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3.5">
+        <legend className="flex items-center gap-1.5 px-1 text-xs font-semibold text-[#3B2314]">
           <PlayCircle className="h-3.5 w-3.5" />
-          Demo video <span className="font-normal text-[#8A786D]">(optional)</span>
-        </label>
+          Demo video <span className="font-normal text-[#8A786D]">(required)</span>
+        </legend>
+        <p className="mb-2.5 text-[11px] text-[#6E5A4F]">
+          Show your project working. When an organisation opens your project, this plays straight away.
+        </p>
+        {newRepoVideoPath ? (
+          <div className="space-y-2">
+            <VideoPlayer
+              key={newRepoVideoPath}
+              project={{ title: newRepoTitle || "Your project", demoVideoPath: newRepoVideoPath }}
+              autoplay={false}
+            />
+            <div className="flex flex-wrap gap-2">
+              <label
+                htmlFor="project-video-file"
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#163126] hover:bg-[#F2EEE8] ${videoUploading ? "pointer-events-none opacity-60" : ""}`}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {videoUploading ? "Uploading…" : "Replace video"}
+              </label>
+              <button
+                type="button"
+                onClick={handleRemoveVideo}
+                disabled={videoUploading}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[#E7C3BC] bg-white px-3 py-1.5 text-xs font-semibold text-[#8A2C1E] hover:bg-[#FBEDEA] disabled:opacity-60"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove video
+              </button>
+            </div>
+          </div>
+        ) : (
+          <label
+            htmlFor="project-video-file"
+            className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-[#B9C9B5] bg-white px-4 py-5 text-center hover:border-[#5E7A5E] hover:bg-[#F4F9EC] ${videoUploading ? "pointer-events-none opacity-70" : ""}`}
+          >
+            <Upload className="h-5 w-5 text-[#5E7A5E]" />
+            <span className="text-sm font-semibold text-[#163126]">
+              {videoUploading ? "Uploading your video…" : "Upload demo video"}
+            </span>
+            <span className="text-[11px] text-[#8A786D]">MP4, WebM or MOV (iPhone) · up to 50 MB</span>
+          </label>
+        )}
         <input
-          id="project-video"
-          type="url"
-          inputMode="url"
-          value={newRepoVideo}
-          onChange={(e) => setNewRepoVideo(e.target.value)}
-          placeholder="https://youtu.be/…"
-          className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm"
+          id="project-video-file"
+          type="file"
+          accept={VIDEO_ACCEPT}
+          onChange={handleVideoFileChosen}
+          disabled={videoUploading}
+          aria-label="Upload demo video file"
+          className="sr-only"
         />
-        <p className="mt-1 text-[11px] text-[#8A786D]">{SUPPORTED_VIDEO_HINT}. Plays inside Geek Archive.</p>
-      </div>
+        {!newRepoVideoPath && (
+          <div className="mt-3">
+            <label htmlFor="project-video" className="mb-1 block text-[11px] font-semibold text-[#3B2314]">
+              Or paste a Demo video link
+            </label>
+            <input
+              id="project-video"
+              type="url"
+              inputMode="url"
+              value={newRepoVideo}
+              onChange={(e) => setNewRepoVideo(e.target.value)}
+              placeholder="https://youtu.be/…"
+              className="w-full rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-sm"
+            />
+            <p className="mt-1 text-[11px] text-[#8A786D]">{SUPPORTED_VIDEO_HINT}.</p>
+          </div>
+        )}
+      </fieldset>
       <div>
         <label className="block text-xs font-semibold text-[#3B2314] mb-1">
           Project description
@@ -1951,7 +2101,7 @@ export default function GeekArchiveApp() {
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={projectSaving}
+          disabled={projectSaving || videoUploading}
           className="flex-1 rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
         >
           {projectSaving ? "Saving…" : editingProjectId ? "Save changes" : "Post my project"}
@@ -1959,8 +2109,8 @@ export default function GeekArchiveApp() {
         {editingProjectId && (
           <button
             type="button"
-            onClick={clearProjectForm}
-            disabled={projectSaving}
+            onClick={cancelProjectForm}
+            disabled={projectSaving || videoUploading}
             className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
           >
             Cancel
@@ -3388,16 +3538,29 @@ export default function GeekArchiveApp() {
                             }`}
                           />
                         </span>
-                        {proto.showcased !== false ? "Shown to organisations" : "Hidden from organisations"}
+                        {proto.showcased === false
+                          ? "Hidden from organisations"
+                          : hasDemoVideo(proto)
+                            ? "Shown to organisations"
+                            : "Will show once it has a demo"}
                       </button>
                     </div>
                     <div className="mt-3">
                       <ProjectLinks project={proto} compact />
                     </div>
-                    {!proto.repo && !proto.demoVideo && (
-                      <p className="mt-3 text-[11px] text-[#8A786D]">
-                        Tip: add a GitHub repo and demo video so organizations can see your work in action.
-                      </p>
+                    {!hasDemoVideo(proto) && (
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E8D9A8] bg-[#FBF6E6] px-3 py-2.5">
+                        <p className="text-xs text-[#6B5420]">Hidden from organisations until you add a demo video.</p>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditProject(proto)}
+                          aria-label={`Add demo video to ${proto.title}`}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-[#163126] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1F4434]"
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          Add demo video
+                        </button>
+                      </div>
                     )}
                   </article>
                 ))
@@ -4068,8 +4231,8 @@ export default function GeekArchiveApp() {
             </div>
           }
         >
-          {openProject.demoVideo ? (
-            <VideoPlayer project={openProject} autoplay />
+          {hasDemoVideo(openProject) ? (
+            <VideoPlayer key={openProject.id} project={openProject} autoplay />
           ) : (
             <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] px-4 py-3 text-xs text-[#6E5A4F]">
               No demo video yet — you can ask the student for one when you get in touch.

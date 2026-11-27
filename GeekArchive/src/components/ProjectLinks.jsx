@@ -1,14 +1,46 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Github, PlayCircle, ExternalLink } from "lucide-react";
 import Modal from "./Modal";
 import { parseGitHubRepo, toVideoEmbed, videoThumbnail } from "../lib/media";
+import { hasDemoVideo, resolveDemoVideo } from "../lib/demoVideos";
 
-/** The demo video player. Autoplays when opened by a click (browsers allow it then). */
+/**
+ * The demo video player: an uploaded file (played through a short-lived link) or a
+ * YouTube/Vimeo/Loom/mp4 link. Autoplays when opened by a click (browsers allow it then).
+ */
 export function VideoPlayer({ project, autoplay = true }) {
-  const video = toVideoEmbed(project.demoVideo, { autoplay });
-  if (!video) return null;
+  const [video, setVideo] = useState(() => (project.demoVideoPath ? undefined : toVideoEmbed(project.demoVideo, { autoplay })));
+  useEffect(() => {
+    let alive = true;
+    if (!project.demoVideoPath) {
+      setVideo(toVideoEmbed(project.demoVideo, { autoplay }));
+      return undefined;
+    }
+    setVideo(undefined);
+    resolveDemoVideo(project, { autoplay })
+      .then((resolved) => alive && setVideo(resolved))
+      .catch(() => alive && setVideo(null));
+    return () => {
+      alive = false;
+    };
+  }, [project.demoVideoPath, project.demoVideo, autoplay]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (video === undefined) {
+    return (
+      <div className="flex aspect-video w-full items-center justify-center rounded-2xl bg-black text-xs text-white/70" role="status">
+        Loading video…
+      </div>
+    );
+  }
+  if (!video) {
+    return project.demoVideoPath ? (
+      <div className="flex aspect-video w-full items-center justify-center rounded-2xl bg-black px-6 text-center text-xs text-white/80" role="alert">
+        This video can&apos;t be played right now. Please try again later.
+      </div>
+    ) : null;
+  }
   return (
     <div className="aspect-video w-full overflow-hidden rounded-2xl bg-black">
       {video.kind === "iframe" ? (
@@ -27,6 +59,7 @@ export function VideoPlayer({ project, autoplay = true }) {
           controls
           autoPlay={autoplay}
           playsInline
+          preload="metadata"
           className="h-full w-full"
           title={`${project.title} demo video`}
         />
@@ -40,9 +73,9 @@ export function VideoPlayer({ project, autoplay = true }) {
  * the project with the video playing).
  */
 export function VideoPreview({ project, onOpen }) {
-  const video = toVideoEmbed(project.demoVideo);
-  if (!video) return null;
-  const thumb = videoThumbnail(project.demoVideo);
+  if (!hasDemoVideo(project)) return null;
+  const provider = project.demoVideoPath ? "Uploaded video" : toVideoEmbed(project.demoVideo).provider;
+  const thumb = project.demoVideoPath ? null : videoThumbnail(project.demoVideo);
   return (
     <button
       type="button"
@@ -65,7 +98,7 @@ export function VideoPreview({ project, onOpen }) {
         <PlayCircle className="h-8 w-8" />
       </span>
       <span className="absolute bottom-2.5 left-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-semibold text-white">
-        ▶ Demo · {video.provider}
+        ▶ Demo · {provider}
       </span>
     </button>
   );
@@ -78,7 +111,9 @@ export function VideoPreview({ project, onOpen }) {
  */
 export default function ProjectLinks({ project, compact = false, onOpen }) {
   const [playing, setPlaying] = useState(false);
-  const video = toVideoEmbed(project.demoVideo);
+  const video = hasDemoVideo(project) && {
+    provider: project.demoVideoPath ? "Uploaded video" : toVideoEmbed(project.demoVideo).provider,
+  };
   const repo = parseGitHubRepo(project.repo);
   const otherLink = !repo && /^https?:\/\//i.test(project.repo || "") ? project.repo : null;
   if (!video && !repo && !otherLink) return null;

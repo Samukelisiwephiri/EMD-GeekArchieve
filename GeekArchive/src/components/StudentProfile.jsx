@@ -13,7 +13,8 @@ import {
   Sparkles,
   Target,
 } from "lucide-react";
-import { parseGitHubRepo, toVideoEmbed } from "../lib/media";
+import { parseGitHubRepo } from "../lib/media";
+import { hasDemoVideo } from "../lib/demoVideos";
 
 const initialsOf = (name) =>
   String(name || "?")
@@ -145,7 +146,7 @@ export default function StudentProfile({ name, profile, projects, onOpenProject,
           <ul className="space-y-2.5">
             {projects.map((project) => {
               const status = contactStatusFor?.(project.id);
-              const hasVideo = Boolean(toVideoEmbed(project.demoVideo));
+              const hasVideo = hasDemoVideo(project);
               const repo = parseGitHubRepo(project.repo);
               return (
                 <li key={project.id} className="rounded-xl border border-[#E6DFD5] p-3.5">
