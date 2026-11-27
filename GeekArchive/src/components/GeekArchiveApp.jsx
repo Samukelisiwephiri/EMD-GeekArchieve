@@ -255,7 +255,7 @@ export default function GeekArchiveApp() {
         ? authEmail
             .split("@")[0]
             .replace(/[._-]+/g, " ")
-            .replace(/\w/g, (c) => c.toUpperCase())
+            .replace(/\b\w/g, (c) => c.toUpperCase())
         : providerLabel === "GitHub"
         ? "Kagiso Mokoena"
         : providerLabel === "Google"
