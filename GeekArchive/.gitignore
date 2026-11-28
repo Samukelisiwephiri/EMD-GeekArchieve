@@ -8,3 +8,5 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 .next-prod/
+.vercel
+.env*.local

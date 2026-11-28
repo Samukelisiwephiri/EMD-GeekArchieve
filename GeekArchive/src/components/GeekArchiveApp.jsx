@@ -501,6 +501,26 @@ export default function GeekArchiveApp() {
   const [accountDetails, setAccountDetails] = useState({});
   // Demo mode: accounts registered in this tab, by email, so signing in finds them again.
   const [demoAccounts, setDemoAccounts] = useState({});
+  // Google/GitHub sign-in buttons only appear when that method is switched on in Supabase
+  // (Authentication -> Providers). Demo mode shows both.
+  const [authProviders, setAuthProviders] = useState(() => (supabase ? { google: false, github: false } : { google: true, github: true }));
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+    fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/settings`, {
+      headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((settings) => {
+        if (!cancelled && settings?.external) {
+          setAuthProviders({ google: Boolean(settings.external.google), github: Boolean(settings.external.github) });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dashboardRole = user?.role || authRole;
   const isYouth = dashboardRole === "Youth Pod Talent";
@@ -941,9 +961,20 @@ export default function GeekArchiveApp() {
     setRecoveringPassword(false);
   };
 
-  const handleSignOut = async () => {
+  const handleSignOut = async (options) => {
     if (supabase) {
-      await supabase.auth.signOut();
+      if (options?.localOnly === true) {
+        // After deleting an account, the server has already removed the user and all its
+        // sessions, so there is nothing to revoke: a server sign-out would only be refused
+        // (403). Just forget the saved session in this browser.
+        try {
+          window.localStorage.removeItem(supabase.auth.storageKey);
+        } catch {
+          // storage blocked: the session goes when the tab closes
+        }
+      } else {
+        await supabase.auth.signOut();
+      }
       // The next person must only see what the database allows them to.
       setPrototypes([]);
       setContactRequests([]);
@@ -1966,7 +1997,7 @@ export default function GeekArchiveApp() {
         return next;
       });
     }
-    await handleSignOut();
+    await handleSignOut({ localOnly: true });
   };
 
   // Accept / Decline for an invitation, or the student's answer once given.
@@ -2443,7 +2474,10 @@ export default function GeekArchiveApp() {
                 </div>
               </div>
 
+              {(authProviders.google || authProviders.github) && (
+              <>
               <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                {authProviders.google && (
                 <button
                   type="button"
                   onClick={() => handleAuthSubmit(null, "Google")}
@@ -2455,7 +2489,9 @@ export default function GeekArchiveApp() {
                   </span>
                   <span>Continue with Google</span>
                 </button>
+                )}
 
+                {authProviders.github && (
                 <button
                   type="button"
                   onClick={() => handleAuthSubmit(null, "GitHub")}
@@ -2465,6 +2501,7 @@ export default function GeekArchiveApp() {
                   <GitBranch className="h-4 w-4 text-[#A8C6A8]" />
                   <span>Continue with GitHub</span>
                 </button>
+                )}
               </div>
 
               <div className="my-4 flex items-center gap-3">
@@ -2474,6 +2511,8 @@ export default function GeekArchiveApp() {
                 </span>
                 <div className="h-px flex-1 bg-[#E6DFD5]" />
               </div>
+              </>
+              )}
 
               <form onSubmit={(e) => handleAuthSubmit(e, "Email")} className="space-y-3" noValidate={authMode === "signup"}>
                 {authMode === "signup" && (
@@ -4498,6 +4537,7 @@ export default function GeekArchiveApp() {
             group={isYouth ? "youth" : "organization"}
             verification={myVerification}
             details={myDetails}
+            githubSignIn={authProviders.github}
             supabaseMode={Boolean(supabase)}
             onSubmit={handleSubmitVerification}
             onLinkGitHub={handleLinkGitHub}

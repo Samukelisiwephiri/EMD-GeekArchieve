@@ -59,7 +59,7 @@ export function VerifiedBadge({ status, compact = false }) {
  * Lets the signed-in user verify who they are. The parent decides the outcome
  * (demo mode) or saves the request so the database decides (Supabase mode).
  */
-export default function VerificationCenter({ user, group, verification, details, supabaseMode, onSubmit, onLinkGitHub }) {
+export default function VerificationCenter({ user, group, verification, details, githubSignIn = true, supabaseMode, onSubmit, onLinkGitHub }) {
   const types = Object.entries(ACCOUNT_TYPES).filter(([, t]) => t.group === group);
   const [accountType, setAccountType] = useState(
     verification?.accountType ||
@@ -124,6 +124,13 @@ export default function VerificationCenter({ user, group, verification, details,
     } finally {
       setBusy(false);
     }
+  };
+
+  // When GitHub sign-in isn't switched on, developers ask an admin to check their GitHub.
+  const submitDeveloperForReview = () => {
+    if (!isGitHubUsername(githubUsername)) return setError("Enter your GitHub username (not the full link).");
+    if (evidenceUrl && !/^https:\/\//i.test(evidenceUrl.trim())) return setError("The link must start with https://");
+    return submit({ method: "admin_review", githubUsername: githubUsername.trim(), evidenceUrl: evidenceUrl.trim() });
   };
 
   const submitOrganisation = () => {
@@ -268,7 +275,28 @@ export default function VerificationCenter({ user, group, verification, details,
 
           {(accountType === "developer" || accountType === "it_professional") && (
             <div className="space-y-3">
-              {supabaseMode ? (
+              {supabaseMode && !githubSignIn ? (
+                <>
+                  <p className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-3.5 text-sm text-[#3B2314]">
+                    Give your GitHub username and, if you like, a link to work you&apos;ve shipped. An admin checks
+                    your GitHub profile and verifies you.
+                  </p>
+                  <div>
+                    <label htmlFor="v-github-review" className={label}>GitHub username</label>
+                    <input id="v-github-review" value={githubUsername} onChange={(e) => setGithubUsername(e.target.value)} placeholder="e.g. thandi-dev" autoComplete="off" className={input} />
+                  </div>
+                  <div>
+                    <label htmlFor="v-dev-evidence" className={label}>
+                      Link to your work <span className="font-normal text-[#8A786D]">(optional)</span>
+                    </label>
+                    <input id="v-dev-evidence" value={evidenceUrl} onChange={(e) => setEvidenceUrl(e.target.value)} placeholder="https://…" className={input} />
+                  </div>
+                  <button type="button" disabled={busy} onClick={submitDeveloperForReview} className="inline-flex items-center gap-1.5 rounded-xl bg-[#24292F] px-4 py-2 text-sm font-semibold text-white disabled:opacity-70">
+                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Github className="h-4 w-4" />}
+                    Send for review
+                  </button>
+                </>
+              ) : supabaseMode ? (
                 <div className="rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-3.5">
                   <p className="text-sm text-[#2F472F]">
                     Connect the GitHub account you build with. GitHub confirms it&apos;s yours, and you&apos;re verified
