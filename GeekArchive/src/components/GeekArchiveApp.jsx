@@ -34,6 +34,7 @@ import {
   BadgeCheck,
   UserRound,
   Upload,
+  RotateCcw,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
 import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
@@ -359,10 +360,47 @@ function podStageFor(pod) {
   return "Looking for students";
 }
 
+// Example offers on the Received offers tab, so students can see how offers work.
+// They live only in the browser: answering one sends nothing and saves nothing.
+const SAMPLE_OFFERS = [
+  {
+    id: "sample-spaza",
+    orgName: "Mamelodi Spaza Collective (sample)",
+    projectTitle: "Stock & Sales Tracker",
+    offer: "R3 500 stipend for 4 weeks, plus a reference letter",
+    offerMessage:
+      "Hi! We run 12 spaza shops and still count stock on paper. We loved your demo video and would like you to help us adapt it for our shops.",
+    need: "Know what's selling and when to reorder, without spreadsheets.",
+    role: "Developer",
+    task: "Adapt the tracker to work offline on low-cost Android phones.",
+  },
+  {
+    id: "sample-ngo",
+    orgName: "Ikhaya Youth Care NGO (sample)",
+    projectTitle: "Volunteer Scheduling App",
+    offer: "Certificate of contribution and a paid data bundle each week",
+    offerMessage:
+      "We coordinate 40 volunteers by WhatsApp and people often miss shifts. Could you help us make the scheduling simpler?",
+    need: "Volunteers should see and swap their shifts on their phones.",
+    role: "UI/UX Designer",
+    task: "Design a simple shift calendar that works on small screens.",
+  },
+  {
+    id: "sample-salon",
+    orgName: "Glow Up Salon, Soweto (sample)",
+    projectTitle: "Bookings & Reminders",
+    offer: "R2 000 once the booking page is live",
+    offerMessage: "",
+    need: "Clients book by phone and forget appointments.",
+    role: "Business Student",
+    task: "Work out pricing for deposits and SMS reminders.",
+  },
+];
+
 const MEMBER_STATUS = {
   invited: { label: "Offer sent · waiting for an answer", className: "bg-[#FBF6E6] text-[#6B5420] border-[#E8D9A8]" },
   accepted: { label: "Accepted", className: "bg-[#EEF7E8] text-[#2F5A2F] border-[#B9DBA9]" },
-  declined: { label: "Rejected", className: "bg-[#FBEDEA] text-[#8A2C1E] border-[#E7C3BC]" },
+  declined: { label: "Declined", className: "bg-[#FBEDEA] text-[#8A2C1E] border-[#E7C3BC]" },
 };
 
 // Shown in place of features that need a verified account.
@@ -604,6 +642,8 @@ export default function GeekArchiveApp() {
   const [videoUploading, setVideoUploading] = useState(false);
   const [respondingPodId, setRespondingPodId] = useState(null);
   const [podInviteError, setPodInviteError] = useState("");
+  // Example offers and the student's practice answers (never saved).
+  const [sampleAnswers, setSampleAnswers] = useState({});
   // What an SMME/NGO offers the students when requesting a pod, plus a short message.
   const [podOffer, setPodOffer] = useState("");
   const [podMessage, setPodMessage] = useState("");
@@ -1836,7 +1876,7 @@ export default function GeekArchiveApp() {
     }
     setPodRequest({
       status: "done",
-      message: `Offer sent for ${project.title}. The matched students will accept or reject it.`,
+      message: `Offer sent for ${project.title}. The matched students will accept or decline it.`,
     });
     setPodOffer("");
     setPodMessage("");
@@ -2254,11 +2294,11 @@ export default function GeekArchiveApp() {
             type="button"
             onClick={() => handlePodInviteResponse(pod, false)}
             disabled={busy}
-            aria-label={`Reject the offer for ${pod.projectTitle}`}
+            aria-label={`Decline the offer for ${pod.projectTitle}`}
             className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:opacity-70"
           >
             <X className="h-3.5 w-3.5" />
-            Reject
+            Decline
           </button>
         </div>
       );
@@ -2270,6 +2310,112 @@ export default function GeekArchiveApp() {
       </p>
     );
   };
+
+  // Accept / Decline on an example offer: only changes what this screen shows.
+  const renderSampleAnswer = (offer) => {
+    const answer = sampleAnswers[offer.id];
+    if (!answer) {
+      return (
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#E6DFD5] pt-3">
+          <p className="mr-auto text-xs text-[#6E5A4F]">Practice: your answer isn&apos;t sent to anyone.</p>
+          <button
+            type="button"
+            onClick={() => setSampleAnswers((a) => ({ ...a, [offer.id]: "accepted" }))}
+            aria-label={`Accept the sample offer for ${offer.projectTitle}`}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#5E7A5E] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#4C654C]"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Accept
+          </button>
+          <button
+            type="button"
+            onClick={() => setSampleAnswers((a) => ({ ...a, [offer.id]: "declined" }))}
+            aria-label={`Decline the sample offer for ${offer.projectTitle}`}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+          >
+            <X className="h-3.5 w-3.5" />
+            Decline
+          </button>
+        </div>
+      );
+    }
+    const accepted = answer === "accepted";
+    return (
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#E6DFD5] pt-3">
+        <p
+          role="status"
+          className={`mr-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${
+            accepted ? "border-[#B9DBA9] bg-[#EEF7E8] text-[#2F5A2F]" : "border-[#E7C3BC] bg-[#FBEDEA] text-[#8A2C1E]"
+          }`}
+        >
+          {accepted ? <CheckCircle2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+          {accepted
+            ? `You accepted. On a real offer, ${offer.orgName.replace(" (sample)", "")} would now see "Accepted" and the work moves to My pods.`
+            : `You declined. On a real offer, the organisation would see "Declined" and the offer would leave this list.`}
+        </p>
+        <button
+          type="button"
+          onClick={() => setSampleAnswers((a) => { const next = { ...a }; delete next[offer.id]; return next; })}
+          aria-label={`Undo your answer to the sample offer for ${offer.projectTitle}`}
+          className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          Undo
+        </button>
+      </div>
+    );
+  };
+
+  // One offer card, shared by real and example offers.
+  const renderOfferCard = (offer, { role, task, answer, sample = false }) => (
+    <article
+      key={offer.id}
+      aria-label={`${sample ? "Sample offer" : "Offer"}: ${offer.projectTitle} from ${offer.orgName}`}
+      className={`rounded-xl border p-5 ${sample ? "border-dashed border-[#CBBFAF] bg-white" : "border-[#E6DFD5] bg-[#FAF8F5]"}`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#5E7A5E]">
+            Offer from {offer.orgName}
+            {sample && (
+              <span className="rounded-full bg-[#FBF6E6] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#6B5420] ring-1 ring-[#E8D9A8]">
+                Sample
+              </span>
+            )}
+          </p>
+          <h3 className="font-bold text-[#2C1A10]">{offer.projectTitle}</h3>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#3B2314] ring-1 ring-[#E6DFD5]">
+          Your role: {role}
+        </span>
+      </div>
+      <div className="mt-3 rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-3.5">
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#3F5D3F]">
+          <Briefcase className="h-3.5 w-3.5" /> What they offer
+        </p>
+        <p className="mt-1 text-sm font-semibold text-[#163126]">
+          {offer.offer || "No offer details given. Ask them before you accept."}
+        </p>
+      </div>
+      {offer.offerMessage && (
+        <div className="mt-3 rounded-xl border border-[#E6DFD5] bg-white p-3.5">
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#6E5A4F]">
+            <MessageSquare className="h-3.5 w-3.5" /> Message from {offer.orgName}
+          </p>
+          <p className="mt-1 text-sm leading-relaxed text-[#3B2314]">“{offer.offerMessage}”</p>
+        </div>
+      )}
+      {offer.need && (
+        <p className="mt-3 text-xs leading-relaxed text-[#5C493E]">
+          <span className="font-semibold text-[#3B2314]">Their need:</span> {offer.need}
+        </p>
+      )}
+      <p className="mt-1 text-xs text-[#5C493E]">
+        <span className="font-semibold text-[#3B2314]">Your task:</span> {task}
+      </p>
+      {answer}
+    </article>
+  );
 
   const handleSaveAccountDetails = async (details) => {
     if (!user?.id) return;
@@ -3242,7 +3388,7 @@ export default function GeekArchiveApp() {
               <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
               <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">Received offers</h2>
               <p className="mt-1 text-sm text-[#6E5A4F]">
-                SMMEs and NGOs that want to work with you. Read what they offer, then accept or reject.
+                SMMEs and NGOs that want to work with you. Read what they offer, then accept or decline.
               </p>
             </div>
             {podInviteError && (
@@ -3252,44 +3398,9 @@ export default function GeekArchiveApp() {
             )}
             {myOpenPods.length ? (
               <div className="space-y-3">
-                {myOpenPods.map((pod) => (
-                  <article key={pod.id} aria-label={`Offer: ${pod.projectTitle} from ${pod.orgName}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <p className="text-xs font-semibold text-[#5E7A5E]">Offer from {pod.orgName}</p>
-                        <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
-                      </div>
-                      <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#3B2314] ring-1 ring-[#E6DFD5]">
-                        Your role: {myRoleIn(pod)?.role}
-                      </span>
-                    </div>
-                    <div className="mt-3 rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-3.5">
-                      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#3F5D3F]">
-                        <Briefcase className="h-3.5 w-3.5" /> What they offer
-                      </p>
-                      <p className="mt-1 text-sm font-semibold text-[#163126]">
-                        {pod.offer || "No offer details given. Ask them before you accept."}
-                      </p>
-                    </div>
-                    {pod.offerMessage && (
-                      <div className="mt-3 rounded-xl border border-[#E6DFD5] bg-white p-3.5">
-                        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#6E5A4F]">
-                          <MessageSquare className="h-3.5 w-3.5" /> Message from {pod.orgName}
-                        </p>
-                        <p className="mt-1 text-sm leading-relaxed text-[#3B2314]">“{pod.offerMessage}”</p>
-                      </div>
-                    )}
-                    {pod.need && (
-                      <p className="mt-3 text-xs leading-relaxed text-[#5C493E]">
-                        <span className="font-semibold text-[#3B2314]">Their need:</span> {pod.need}
-                      </p>
-                    )}
-                    <p className="mt-1 text-xs text-[#5C493E]">
-                      <span className="font-semibold text-[#3B2314]">Your task:</span> {myRoleIn(pod)?.task}
-                    </p>
-                    {renderInviteAnswer(pod)}
-                  </article>
-                ))}
+                {myOpenPods.map((pod) =>
+                  renderOfferCard(pod, { role: myRoleIn(pod)?.role, task: myRoleIn(pod)?.task, answer: renderInviteAnswer(pod) })
+                )}
               </div>
             ) : (
               <div className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-7 text-center">
@@ -3299,6 +3410,32 @@ export default function GeekArchiveApp() {
                 </p>
               </div>
             )}
+
+            <div className="mt-8 border-t border-[#E6DFD5] pt-6" aria-labelledby="sample-offers-heading">
+              <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <h3 id="sample-offers-heading" className="font-bold text-[#2C1A10]">Sample offers</h3>
+                  <p className="mt-1 text-sm text-[#6E5A4F]">
+                    Examples of what an offer looks like. Try Accept or Decline: nothing is sent or saved.
+                  </p>
+                </div>
+                {Object.keys(sampleAnswers).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSampleAnswers({})}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3 py-1.5 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Reset samples
+                  </button>
+                )}
+              </div>
+              <div className="space-y-3">
+                {SAMPLE_OFFERS.map((offer) =>
+                  renderOfferCard(offer, { role: offer.role, task: offer.task, answer: renderSampleAnswer(offer), sample: true })
+                )}
+              </div>
+            </div>
           </section>
         )}
 
@@ -3468,7 +3605,7 @@ export default function GeekArchiveApp() {
                   <p className="text-sm font-semibold text-[#163126]">Ready to start?</p>
                   <p className="mt-0.5 text-xs text-[#3E4F46]">
                     Send an offer to the matched verified students for {matchedResult.prototype.title}. They see your
-                    need, your offer and your message, and accept or reject it.
+                    need, your offer and your message, and accept or decline it.
                   </p>
                   {isVerified ? (
                     <>

@@ -4,13 +4,13 @@ Geek Archive connects South African SMMEs, NGOs and sponsors with verified stude
 Students showcase the GitHub projects they're most confident in, each with a demo video; organisations
 discover them by category, watch the demos, get a plain-language AI analysis of each project, receive
 AI recommendations for their need, contact students, and send an offer (with a short message) to a
-three-person pod (developer, UI/UX designer, business student). Students accept or reject the offer;
+three-person pod (developer, UI/UX designer, business student). Students accept or decline the offer;
 once the work is delivered, the organisation signs it off.
 
 **Live:** [geek-archive.vercel.app](https://geek-archive.vercel.app) (Vercel + Supabase).
 
 **Walkthrough:** a 23-step screenshot guide of the whole flow (sign-up, demo video, discovery,
-offers, accept/reject, sign-off) is in [`docs/walkthrough/index.html`](docs/walkthrough/index.html).
+offers, accept/decline, sign-off) is in [`docs/walkthrough/index.html`](docs/walkthrough/index.html).
 Open the file in a browser after cloning; GitHub shows HTML files as source code.
 
 ## Features
@@ -24,7 +24,7 @@ Open the file in a browser after cloning; GitHub shows HTML files as source code
 | Show/hide each project; edit/delete (videos are deleted with it) | Watch demos (pop up and play), view student profiles | |
 | Talent profile (edit/delete) | AI project analysis & AI recommendations | |
 | Messages from organisations; reply by email or "Not now" | Contact students (privacy-preserving) | |
-| **Received offers**: see what's offered and the message, then Accept or Reject; My pods | Send an offer with a message; see each student's answer; sign off once someone accepted | |
+| **Received offers**: see what's offered and the message, then Accept or Decline (plus sample offers to practise on); My pods | Send an offer with a message; see each student's answer; sign off once someone accepted | |
 
 Privacy (POPIA): consent at sign-up, privacy notice, "Privacy & my data" (download / delete account),
 no ID numbers or documents collected. Phone numbers and registration details are private (the person
