@@ -4,8 +4,8 @@ Geek Archive connects South African SMMEs, NGOs and sponsors with verified stude
 Students showcase the GitHub projects they're most confident in; organisations discover them by
 category, watch demo videos, get a plain-language AI analysis of each project, receive AI
 recommendations for their need, contact students, and request a three-person pod (developer,
-UI/UX designer, business student) to finish and tailor the project. Signed-off pods become
-verified career credentials for the students.
+UI/UX designer, business student) to finish and tailor the project, then sign off the
+delivered work.
 
 ## Features
 
@@ -16,7 +16,7 @@ verified career credentials for the students.
 | Show/hide each project; edit/delete | Watch demos (autoplay), view student profiles | |
 | Talent profile (edit/delete) | AI project analysis & AI recommendations | |
 | Messages from organisations; reply by email | Contact students (privacy-preserving) | |
-| Pods, opportunities, career credentials | Request pods, sign off delivered work | |
+| Pods and matched opportunities | Request pods, sign off delivered work | |
 
 Privacy (POPIA): consent at sign-up, privacy notice, "Privacy & my data" (download / delete account),
 no ID numbers or documents collected, students' contact details never shown to organisations.

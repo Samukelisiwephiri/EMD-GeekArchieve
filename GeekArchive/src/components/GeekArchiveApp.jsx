@@ -1642,7 +1642,7 @@ export default function GeekArchiveApp() {
     setPods((prev) =>
       prev.map((p) =>
         p.id === podId
-          ? { ...p, progress: 100, signedOff: true, signedOffAt: now, stage: "Verified Shipped & Credential Issued" }
+          ? { ...p, progress: 100, signedOff: true, signedOffAt: now, stage: "Delivered & Signed Off" }
           : p
       )
     );
@@ -4032,7 +4032,7 @@ export default function GeekArchiveApp() {
                     <div className="mt-5 flex items-center justify-between border-t border-[#E6DFD5] pt-4">
                       <span className="inline-flex items-center gap-1 text-xs text-[#5C493E]">
                         <ShieldCheck className="h-4 w-4 text-[#5E7A5E]" />
-                        <span>Your sign-off issues the students' credentials</span>
+                        <span>Sign off once the pod has delivered the work</span>
                       </span>
                       <button
                         type="button"

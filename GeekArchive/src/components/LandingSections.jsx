@@ -45,7 +45,7 @@ const STEPS = [
   { icon: Github, title: "Students showcase", text: "Verify, then choose your best GitHub projects and add a demo video." },
   { icon: Wand2, title: "Organisations discover", text: "Describe a need. AI recommends projects; search by category or as you type." },
   { icon: Users, title: "A pod delivers", text: "Request a developer, designer and business student to finish the project." },
-  { icon: BadgeCheck, title: "Proof that counts", text: "Sign-off turns delivered work into a verified credential for each student." },
+  { icon: BadgeCheck, title: "Signed off", text: "The organisation reviews the finished work and signs it off. The project is theirs to use." },
 ];
 
 /** "Why Geek Archive" + "How it works" — below the sign-in card on the landing page. */

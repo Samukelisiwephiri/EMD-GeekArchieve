@@ -716,7 +716,7 @@ begin
   set stakeholder_signed_off = true,
       signed_off_at = now(),
       progress_pct = 100,
-      stage = 'Verified Shipped & Credential Issued'
+      stage = 'Delivered & Signed Off'
   where id = p_pod_id and organization_id = auth.uid();
 
   if not found then
@@ -1084,3 +1084,10 @@ drop policy if exists demo_videos_delete_own on storage.objects;
 create policy demo_videos_delete_own on storage.objects
   for delete to authenticated
   using (bucket_id = 'demo-videos' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ---------------------------------------------------------------------------------
+-- Pods signed off before credentials were removed: show the current stage name.
+-- ---------------------------------------------------------------------------------
+update public.youth_pods
+   set stage = 'Delivered & Signed Off'
+ where stage = 'Verified Shipped & Credential Issued';
