@@ -59,15 +59,18 @@ export function VerifiedBadge({ status, compact = false }) {
  * Lets the signed-in user verify who they are. The parent decides the outcome
  * (demo mode) or saves the request so the database decides (Supabase mode).
  */
-export default function VerificationCenter({ user, group, verification, supabaseMode, onSubmit, onLinkGitHub }) {
+export default function VerificationCenter({ user, group, verification, details, supabaseMode, onSubmit, onLinkGitHub }) {
   const types = Object.entries(ACCOUNT_TYPES).filter(([, t]) => t.group === group);
-  const [accountType, setAccountType] = useState(verification?.accountType || types[0][0]);
-  const [institution, setInstitution] = useState(verification?.institution || "");
+  const [accountType, setAccountType] = useState(
+    verification?.accountType ||
+      (types.some(([key]) => key === details?.accountType) ? details.accountType : types[0][0])
+  );
+  const [institution, setInstitution] = useState(verification?.institution || details?.institution || "");
   const [evidenceUrl, setEvidenceUrl] = useState(verification?.evidenceUrl || "");
   const [githubUsername, setGithubUsername] = useState(verification?.githubUsername || "");
   const [githubCode] = useState(() => verification?.githubCode || makeGitHubCode());
-  const [orgName, setOrgName] = useState(verification?.orgName || "");
-  const [registration, setRegistration] = useState(verification?.registrationNumber || "");
+  const [orgName, setOrgName] = useState(verification?.orgName || details?.organizationName || "");
+  const [registration, setRegistration] = useState(verification?.registrationNumber || details?.registrationNumber || "");
   const [website, setWebsite] = useState(verification?.website || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

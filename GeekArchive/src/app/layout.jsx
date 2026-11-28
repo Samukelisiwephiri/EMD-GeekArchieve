@@ -15,8 +15,13 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={sans.variable}>
-      <body className={`${sans.className} min-h-screen bg-[#FAF8F5] text-[#2C1A10] antialiased`}>
+    // Browser extensions (QuillBot, Grammarly, …) add attributes to <html>/<body> before React
+    // loads; this ignores only those two tags' own attributes, not mismatches inside the page.
+    <html lang="en" className={sans.variable} suppressHydrationWarning>
+      <body
+        className={`${sans.className} min-h-screen bg-[#FAF8F5] text-[#2C1A10] antialiased`}
+        suppressHydrationWarning
+      >
         {children}
       </body>
     </html>

@@ -363,6 +363,25 @@ begin
     left(new.raw_user_meta_data ->> 'popia_notice_version', 20)
   )
   on conflict (id) do nothing;
+
+  if new.raw_user_meta_data ? 'phone' then
+    begin
+      insert into public.account_details (
+        user_id, full_name, phone, account_type, institution, organization_name, registration_number
+      )
+      select
+        new.id,
+        trim(new.raw_user_meta_data ->> 'full_name'),
+        new.raw_user_meta_data ->> 'phone',
+        new.raw_user_meta_data ->> 'account_type',
+        nullif(trim(coalesce(new.raw_user_meta_data ->> 'institution', '')), ''),
+        nullif(trim(coalesce(new.raw_user_meta_data ->> 'organization_name', '')), ''),
+        nullif(upper(trim(coalesce(new.raw_user_meta_data ->> 'registration_number', ''))), '')
+      where (requested_role = 'organization') = ((new.raw_user_meta_data ->> 'account_type') in ('smme', 'ngo'));
+    exception when others then
+      null; -- incomplete details: asked for after sign-in
+    end;
+  end if;
   return new;
 end;
 $$;
@@ -1169,3 +1188,101 @@ create policy demo_videos_delete_own on storage.objects
 update public.youth_pods
    set stage = 'Delivered & Signed Off'
  where stage = 'Verified Shipped & Credential Issued';
+
+-- ---------------------------------------------------------------------------------
+-- Registration details every account must have. Private: only the account holder and
+-- admins can read them; other users only see profiles.display_name. Written through
+-- save_account_details() (or at email sign-up), never directly.
+-- ---------------------------------------------------------------------------------
+create table if not exists public.account_details (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  full_name text not null,
+  phone text not null,
+  account_type text not null,
+  institution text,
+  organization_name text,
+  registration_number text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table public.account_details drop constraint if exists account_details_valid;
+alter table public.account_details add constraint account_details_valid check (
+  char_length(full_name) between 2 and 120
+  and full_name ~ '\S\s+\S'
+  and phone ~ '^\+27[6-8][0-9]{8}$'
+  and account_type in ('student', 'developer', 'it_professional', 'smme', 'ngo')
+  and (account_type <> 'student' or char_length(coalesce(institution, '')) >= 2)
+  and char_length(coalesce(institution, '')) <= 150
+  and (
+    account_type not in ('smme', 'ngo')
+    or (
+      char_length(coalesce(organization_name, '')) between 2 and 150
+      and (
+        registration_number ~ '^(19|20)[0-9]{2}/[0-9]{6}/[0-9]{2}$'
+        or (account_type = 'ngo' and registration_number ~ '^[0-9]{3}-[0-9]{3} ?NPO$')
+      )
+    )
+  )
+);
+
+alter table public.account_details enable row level security;
+drop policy if exists account_details_read_own_or_admin on public.account_details;
+create policy account_details_read_own_or_admin on public.account_details
+  for select to authenticated
+  using (user_id = auth.uid() or public.get_current_profile_role() = 'admin');
+revoke all on public.account_details from anon, authenticated;
+grant select on public.account_details to authenticated;
+
+-- Saves (or updates) the signed-in user's details and sets the name others see:
+-- a student's full name, or the organisation's name.
+create or replace function public.save_account_details(
+  p_full_name text,
+  p_phone text,
+  p_account_type text,
+  p_institution text default null,
+  p_organization_name text default null,
+  p_registration_number text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  my_role text := public.get_current_profile_role();
+  is_org boolean := p_account_type in ('smme', 'ngo');
+begin
+  if auth.uid() is null or my_role is null then
+    raise exception 'Please sign in first';
+  end if;
+  if (my_role = 'organization' and not is_org) or (my_role = 'youth' and is_org) then
+    raise exception 'That account type does not match your account';
+  end if;
+
+  insert into public.account_details (
+    user_id, full_name, phone, account_type, institution, organization_name, registration_number
+  )
+  values (
+    auth.uid(),
+    trim(p_full_name),
+    p_phone,
+    p_account_type,
+    nullif(trim(coalesce(p_institution, '')), ''),
+    case when is_org then nullif(trim(coalesce(p_organization_name, '')), '') end,
+    case when is_org then nullif(upper(trim(coalesce(p_registration_number, ''))), '') end
+  )
+  on conflict (user_id) do update
+    set full_name = excluded.full_name,
+        phone = excluded.phone,
+        account_type = excluded.account_type,
+        institution = excluded.institution,
+        organization_name = excluded.organization_name,
+        registration_number = excluded.registration_number,
+        updated_at = now();
+
+  update public.profiles
+     set display_name = case when is_org then trim(p_organization_name) else trim(p_full_name) end
+   where id = auth.uid();
+end;
+$$;
+grant execute on function public.save_account_details(text, text, text, text, text, text) to authenticated;

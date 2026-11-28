@@ -3,21 +3,6 @@
 import React from "react";
 import { BadgeCheck, Github, Lock, PlayCircle, Sparkles, Users, Wand2 } from "lucide-react";
 
-// Shown as a label, e.g. "Hackathon entry · NEMISA Hackathon 2026". Set it with
-// NEXT_PUBLIC_EVENT_NAME; leave it empty to hide the label. This describes the
-// project as an entry — it is not an official badge of the event organiser.
-const EVENT_NAME = process.env.NEXT_PUBLIC_EVENT_NAME ?? "NEMISA Hackathon";
-
-export function EventBadge() {
-  if (!EVENT_NAME) return null;
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-[#F2C94C]/40 bg-[#F2C94C]/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#F5DC8A]">
-      <span aria-hidden="true">🏆</span>
-      Hackathon entry · {EVENT_NAME}
-    </span>
-  );
-}
-
 const UNIQUE = [
   {
     icon: BadgeCheck,

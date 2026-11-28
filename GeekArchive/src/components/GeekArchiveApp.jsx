@@ -43,12 +43,21 @@ import AiAnalysisPanel from "./AiAnalysisPanel";
 import VerificationCenter, { VerifiedBadge } from "./VerificationCenter";
 import AdminVerifications from "./AdminVerifications";
 import { ConsentGate, PrivacyCenter, PrivacyNotice } from "./Privacy";
+import { AccountDetailsFields, AccountDetailsGate } from "./AccountDetails";
+import {
+  accountTypesFor,
+  cleanAccountDetails,
+  displayNameFor,
+  emptyAccountDetails,
+  fromAccountDetailsRow,
+  validateAccountDetails,
+} from "../lib/accountDetails";
 import { ACCOUNT_TYPES, POPIA_NOTICE_VERSION, isInstitutionEmail } from "../lib/verification";
 import { CATEGORIES, CATEGORY_BY_ID, categoryLabel, suggestCategory } from "../lib/categories";
 import GitHubImport from "./GitHubImport";
 import SearchSuggest, { matchProject } from "./SearchSuggest";
 import AiRecommendPanel from "./AiRecommendPanel";
-import LandingSections, { EventBadge } from "./LandingSections";
+import LandingSections from "./LandingSections";
 import { parseGitHubRepo, toVideoEmbed, SUPPORTED_VIDEO_HINT } from "../lib/media";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 import {
@@ -485,6 +494,13 @@ export default function GeekArchiveApp() {
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showNotice, setShowNotice] = useState(false);
   const [signupConsent, setSignupConsent] = useState(false);
+  // Sign-up details (required) and the password confirmation.
+  const [signupDetails, setSignupDetails] = useState(() => emptyAccountDetails("youth"));
+  const [authPassword2, setAuthPassword2] = useState("");
+  // Registered details per user id. With Supabase only the signed-in user's are loaded.
+  const [accountDetails, setAccountDetails] = useState({});
+  // Demo mode: accounts registered in this tab, by email, so signing in finds them again.
+  const [demoAccounts, setDemoAccounts] = useState({});
 
   const dashboardRole = user?.role || authRole;
   const isYouth = dashboardRole === "Youth Pod Talent";
@@ -498,6 +514,12 @@ export default function GeekArchiveApp() {
   const canSeeStudentWork = (ownerId) => isVerified && isOwnerVerified(ownerId);
   const consentAt = user?.consentAt || (user?.id ? consents[user.id] : null) || null;
   const needsConsent = Boolean(user) && !showAuthLanding && !consentAt;
+  const myDetails = user?.id ? accountDetails[user.id] || null : null;
+  const myGroup = isYouth ? "youth" : "organization";
+  // Every account needs its registered details (Google/GitHub sign-ups and older accounts
+  // are asked after sign-in). With Supabase, wait until they've been looked up.
+  const needsDetails =
+    Boolean(user) && !showAuthLanding && !isAdmin && !needsConsent && (!supabase || user.detailsChecked) && !myDetails;
   const navTabs = isAdmin
     ? [
         { id: "verifications", label: "Verifications" },
@@ -587,7 +609,13 @@ export default function GeekArchiveApp() {
         .select("display_name, role, popia_consent_at")
         .eq("id", authUser.id)
         .maybeSingle();
+      const { data: detailsRow } = await supabase
+        .from("account_details")
+        .select("full_name, phone, account_type, institution, organization_name, registration_number")
+        .eq("user_id", authUser.id)
+        .maybeSingle();
       if (cancelled) return;
+      setAccountDetails(detailsRow ? { [authUser.id]: fromAccountDetailsRow(detailsRow) } : {});
       const storedRole = profile?.role || authUser.user_metadata?.role;
       const isAdminAccount = storedRole === "admin";
       const role = isAdminAccount ? "Admin" : storedRole === "organization" ? "SMME / NGO" : "Youth Pod Talent";
@@ -605,6 +633,7 @@ export default function GeekArchiveApp() {
         provider: authUser.app_metadata?.provider || "email",
         isAdmin: isAdminAccount,
         consentAt: profile?.popia_consent_at || null,
+        detailsChecked: true,
       });
       setNewTalent((current) => ({ ...current, name }));
       setActiveTab(isAdminAccount ? "verifications" : role === "Youth Pod Talent" ? "talent" : "match");
@@ -760,10 +789,28 @@ export default function GeekArchiveApp() {
     setAuthNotice("");
     const isOAuth = providerLabel === "Google" || providerLabel === "GitHub";
 
-    if (!isOAuth && authMode === "signup" && !signupConsent) {
+    const signupGroup = authRole === "SMME / NGO" ? "organization" : "youth";
+    const isEmailSignup = !isOAuth && authMode === "signup";
+    if (isEmailSignup) {
+      const problem = validateAccountDetails(signupDetails, signupGroup);
+      if (problem) {
+        setAuthError(problem);
+        return;
+      }
+      if (authPassword.length < 8) {
+        setAuthError("Choose a password of at least 8 characters.");
+        return;
+      }
+      if (authPassword !== authPassword2) {
+        setAuthError("The two passwords don't match.");
+        return;
+      }
+    }
+    if (isEmailSignup && !signupConsent) {
       setAuthError("Please agree to the privacy notice to create an account.");
       return;
     }
+    const signupClean = isEmailSignup ? cleanAccountDetails(signupDetails, signupGroup) : null;
 
     if (supabase) {
       setAuthLoading(true);
@@ -782,7 +829,13 @@ export default function GeekArchiveApp() {
             password: authPassword,
             options: {
               data: {
-                display_name: nameFromEmail(authEmail),
+                display_name: displayNameFor(signupClean, signupGroup),
+                full_name: signupClean.fullName,
+                phone: signupClean.phone,
+                account_type: signupClean.accountType,
+                institution: signupClean.institution,
+                organization_name: signupClean.organizationName,
+                registration_number: signupClean.registrationNumber,
                 role: authRole === "SMME / NGO" ? "organization" : "youth",
                 popia_consent_at: new Date().toISOString(),
                 popia_notice_version: POPIA_NOTICE_VERSION,
@@ -802,6 +855,7 @@ export default function GeekArchiveApp() {
           if (error) throw error;
         }
         setAuthPassword("");
+        setAuthPassword2("");
       } catch (err) {
         setAuthError(err?.message || "Something went wrong. Please try again.");
       } finally {
@@ -817,12 +871,22 @@ export default function GeekArchiveApp() {
         : "Zinhle Ndlovu"
       : nameFromEmail(authEmail) || "Tshepo Molefe";
 
-    const demoAdmin = !isOAuth && authEmail.trim().toLowerCase() === DEMO_ADMIN_EMAIL;
+    const emailKey = authEmail.trim().toLowerCase();
+    const demoAdmin = !isOAuth && emailKey === DEMO_ADMIN_EMAIL;
+    const registered = !isOAuth && !isEmailSignup ? demoAccounts[emailKey] : null;
     // If this demo user already saved a profile, keep the name they chose there.
-    const demoId = demoAdmin ? "demo:admin" : demoUserId(derivedName);
+    const demoId = demoAdmin
+      ? "demo:admin"
+      : registered?.id || demoUserId(signupClean ? displayNameFor(signupClean, signupGroup) : derivedName);
     const displayName = demoAdmin
       ? "Geek Archive Admin"
-      : talentProfiles.find((profile) => profile.userId === demoId)?.name || derivedName;
+      : signupClean
+        ? displayNameFor(signupClean, signupGroup)
+        : talentProfiles.find((profile) => profile.userId === demoId)?.name || registered?.name || derivedName;
+    if (signupClean && !demoAdmin) {
+      setAccountDetails((current) => ({ ...current, [demoId]: signupClean }));
+      setDemoAccounts((current) => ({ ...current, [emailKey]: { id: demoId, name: displayName } }));
+    }
     if (!isOAuth && authMode === "signup" && signupConsent) {
       setConsents((current) => ({ ...current, [demoId]: current[demoId] || new Date().toISOString() }));
     }
@@ -1857,6 +1921,7 @@ export default function GeekArchiveApp() {
     exportedAt: new Date().toISOString(),
     privacyNoticeVersion: POPIA_NOTICE_VERSION,
     account: { id: user?.id, name: user?.name, email: user?.email, role: user?.role, consentAt },
+    registeredDetails: myDetails,
     verification: myVerification,
     talentProfile: ownTalentProfile,
     projects: prototypes.filter((p) => p.ownerId === user?.id),
@@ -1887,6 +1952,14 @@ export default function GeekArchiveApp() {
         delete next[id];
         return next;
       });
+      setAccountDetails((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setDemoAccounts((current) =>
+        Object.fromEntries(Object.entries(current).filter(([, account]) => account.id !== id))
+      );
       setConsents((current) => {
         const next = { ...current };
         delete next[id];
@@ -1934,6 +2007,28 @@ export default function GeekArchiveApp() {
         You accepted. You&apos;re working with {pod.orgName}.
       </p>
     );
+  };
+
+  const handleSaveAccountDetails = async (details) => {
+    if (!user?.id) return;
+    if (supabase) {
+      const { error } = await supabase.rpc("save_account_details", {
+        p_full_name: details.fullName,
+        p_phone: details.phone,
+        p_account_type: details.accountType,
+        p_institution: details.institution || null,
+        p_organization_name: details.organizationName || null,
+        p_registration_number: details.registrationNumber || null,
+      });
+      if (error) throw error;
+    }
+    const name = displayNameFor(details, myGroup);
+    setAccountDetails((current) => ({ ...current, [user.id]: details }));
+    if (!supabase && user.email) {
+      setDemoAccounts((current) => ({ ...current, [user.email.toLowerCase()]: { id: user.id, name } }));
+    }
+    setUser((current) => (current ? { ...current, name } : current));
+    setNewTalent((current) => ({ ...current, name: isYouth ? name : current.name }));
   };
 
   const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
@@ -2236,8 +2331,6 @@ export default function GeekArchiveApp() {
 
         <main className="relative z-10 mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-6 py-10 lg:grid-cols-12">
           <div className="space-y-6 lg:col-span-7">
-            <EventBadge />
-            <br />
             <span className="inline-flex items-center gap-2 rounded-full border border-[#C8DD9F]/25 bg-[#C8DD9F]/10 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.16em] text-[#E3ECCF]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#C8DD9F]" />
               <span>Ideas become jobs. Builds become proof.</span>
@@ -2313,7 +2406,7 @@ export default function GeekArchiveApp() {
                   Add Supabase keys to <code>.env.local</code> to turn on real sign-in.
                 </p>
               )}
-              {authError && (
+              {authError && authMode !== "signup" && (
                 <p role="alert" className="mt-3 rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
                   {authError}
                 </p>
@@ -2333,7 +2426,11 @@ export default function GeekArchiveApp() {
                     <button
                       key={roleOption}
                       type="button"
-                      onClick={() => setAuthRole(roleOption)}
+                      onClick={() => {
+                        setAuthRole(roleOption);
+                        const group = roleOption === "SMME / NGO" ? "organization" : "youth";
+                        setSignupDetails((current) => ({ ...current, accountType: accountTypesFor(group)[0] }));
+                      }}
                       className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
                         authRole === roleOption
                           ? "border-[#5E7A5E] bg-[#EEF4EE] text-[#2F472F]"
@@ -2378,14 +2475,24 @@ export default function GeekArchiveApp() {
                 <div className="h-px flex-1 bg-[#E6DFD5]" />
               </div>
 
-              <form onSubmit={(e) => handleAuthSubmit(e, "Email")} className="space-y-3">
+              <form onSubmit={(e) => handleAuthSubmit(e, "Email")} className="space-y-3" noValidate={authMode === "signup"}>
+                {authMode === "signup" && (
+                  <AccountDetailsFields
+                    group={authRole === "SMME / NGO" ? "organization" : "youth"}
+                    value={signupDetails}
+                    onChange={setSignupDetails}
+                    idPrefix="signup"
+                  />
+                )}
                 <div>
-                  <label className="block text-xs font-semibold text-[#3B2314] mb-1">
+                  <label htmlFor="auth-email" className="block text-xs font-semibold text-[#3B2314] mb-1">
                     Email address
                   </label>
                   <input
+                    id="auth-email"
                     type="email"
                     required
+                    autoComplete="email"
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
                     placeholder="you@example.co.za"
@@ -2406,7 +2513,25 @@ export default function GeekArchiveApp() {
                     placeholder="••••••••"
                     className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm text-[#2C1A10] focus:border-[#5E7A5E] focus:outline-none"
                   />
+                  {authMode === "signup" && <p className="mt-1 text-[11px] text-[#8A786D]">At least 8 characters.</p>}
                 </div>
+                {authMode === "signup" && (
+                  <div>
+                    <label htmlFor="auth-password2" className="mb-1 block text-xs font-semibold text-[#3B2314]">
+                      Confirm password
+                    </label>
+                    <input
+                      id="auth-password2"
+                      type="password"
+                      required
+                      autoComplete="new-password"
+                      value={authPassword2}
+                      onChange={(e) => setAuthPassword2(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm text-[#2C1A10] focus:border-[#5E7A5E] focus:outline-none"
+                    />
+                  </div>
+                )}
                 {supabase && authMode === "signin" && (
                   <button
                     type="button"
@@ -2440,6 +2565,12 @@ export default function GeekArchiveApp() {
                       privacy notice
                     </button>
                     .
+                  </p>
+                )}
+                {authError && authMode === "signup" && (
+                  // Next to the button: the sign-up form is long, so an error at the top could go unseen.
+                  <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+                    {authError}
                   </p>
                 )}
                 <button
@@ -4366,6 +4497,7 @@ export default function GeekArchiveApp() {
             user={user}
             group={isYouth ? "youth" : "organization"}
             verification={myVerification}
+            details={myDetails}
             supabaseMode={Boolean(supabase)}
             onSubmit={handleSubmitVerification}
             onLinkGitHub={handleLinkGitHub}
@@ -4420,6 +4552,16 @@ export default function GeekArchiveApp() {
         onAgree={handleConsent}
         onSignOut={handleSignOut}
       />
+      {needsDetails && (
+        <AccountDetailsGate
+          key={user.id}
+          open
+          group={myGroup}
+          initialName={isYouth ? user.name : ""}
+          onSave={handleSaveAccountDetails}
+          onSignOut={handleSignOut}
+        />
+      )}
 
       {viewedProfile && (
         <Modal
