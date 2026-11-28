@@ -411,6 +411,8 @@ export default function GeekArchiveApp() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  // Email address waiting for confirmation (shows "Send the confirmation email again").
+  const [unconfirmedEmail, setUnconfirmedEmail] = useState("");
   // Password recovery: true after the user opens the reset link from their email.
   const [recoveringPassword, setRecoveringPassword] = useState(false);
   const [newPassword, setNewPassword] = useState("");
@@ -857,6 +859,8 @@ export default function GeekArchiveApp() {
             email: authEmail.trim(),
             password: authPassword,
             options: {
+              // The link in the confirmation email returns here (must be in Supabase's Redirect URLs).
+              emailRedirectTo: window.location.origin,
               data: {
                 display_name: displayNameFor(signupClean, signupGroup),
                 full_name: signupClean.fullName,
@@ -873,7 +877,11 @@ export default function GeekArchiveApp() {
           });
           if (error) throw error;
           if (!data.session) {
-            setAuthNotice("Check your email to confirm your account, then sign in.");
+            setAuthNotice(
+              `We sent a confirmation link to ${authEmail.trim()}. Open it to confirm your account, then sign in. ` +
+                "Check your spam folder if it isn't there in a few minutes."
+            );
+            setUnconfirmedEmail(authEmail.trim());
             setAuthMode("signin");
           }
         } else {
@@ -886,7 +894,15 @@ export default function GeekArchiveApp() {
         setAuthPassword("");
         setAuthPassword2("");
       } catch (err) {
-        setAuthError(err?.message || "Something went wrong. Please try again.");
+        if (err?.code === "email_not_confirmed" || /email not confirmed/i.test(err?.message || "")) {
+          setAuthError(
+            "Your email address isn't confirmed yet. Open the confirmation link we emailed you (check spam too), " +
+              "or send it again below."
+          );
+          setUnconfirmedEmail(authEmail.trim());
+        } else {
+          setAuthError(err?.message || "Something went wrong. Please try again.");
+        }
       } finally {
         setAuthLoading(false);
       }
@@ -941,6 +957,28 @@ export default function GeekArchiveApp() {
     setNewTalent((current) => ({ ...current, name: displayName }));
     setActiveTab(becomesAdmin ? "verifications" : authRole === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
+  };
+
+  const handleResendConfirmation = async () => {
+    if (!supabase || !unconfirmedEmail) return;
+    setAuthError("");
+    setAuthNotice("");
+    setAuthLoading(true);
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email: unconfirmedEmail,
+      options: { emailRedirectTo: window.location.origin },
+    });
+    setAuthLoading(false);
+    if (error) {
+      setAuthError(
+        /rate|seconds|limit/i.test(error.message || "")
+          ? "Too many emails were sent just now. Please wait a minute and try again."
+          : error.message || "Couldn't send the email. Please try again."
+      );
+      return;
+    }
+    setAuthNotice(`Confirmation email sent again to ${unconfirmedEmail}. Check your inbox and spam folder.`);
   };
 
   const handleForgotPassword = async () => {
@@ -2665,6 +2703,16 @@ export default function GeekArchiveApp() {
                       className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3.5 py-2 text-sm text-[#2C1A10] focus:border-[#5E7A5E] focus:outline-none"
                     />
                   </div>
+                )}
+                {supabase && authMode === "signin" && unconfirmedEmail && (
+                  <button
+                    type="button"
+                    onClick={handleResendConfirmation}
+                    disabled={authLoading}
+                    className="block text-xs font-semibold text-[#3F5D3F] hover:underline"
+                  >
+                    Send the confirmation email again
+                  </button>
                 )}
                 {supabase && authMode === "signin" && (
                   <button
