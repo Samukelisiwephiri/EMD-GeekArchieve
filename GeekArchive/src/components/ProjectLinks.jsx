@@ -10,7 +10,8 @@ import { hasDemoVideo, resolveDemoVideo } from "../lib/demoVideos";
  * The demo video player: an uploaded file (played through a short-lived link) or a
  * YouTube/Vimeo/Loom/mp4 link. Autoplays when opened by a click (browsers allow it then).
  */
-export function VideoPlayer({ project, autoplay = true }) {
+export function VideoPlayer({ project, autoplay = true, rounded = true }) {
+  const corner = rounded ? "rounded-2xl" : "";
   const [video, setVideo] = useState(() => (project.demoVideoPath ? undefined : toVideoEmbed(project.demoVideo, { autoplay })));
   useEffect(() => {
     let alive = true;
@@ -29,20 +30,20 @@ export function VideoPlayer({ project, autoplay = true }) {
 
   if (video === undefined) {
     return (
-      <div className="flex aspect-video w-full items-center justify-center rounded-2xl bg-black text-xs text-white/70" role="status">
+      <div className={`flex aspect-video w-full items-center justify-center ${corner} bg-black text-xs text-white/70`} role="status">
         Loading video…
       </div>
     );
   }
   if (!video) {
     return project.demoVideoPath ? (
-      <div className="flex aspect-video w-full items-center justify-center rounded-2xl bg-black px-6 text-center text-xs text-white/80" role="alert">
+      <div className={`flex aspect-video w-full items-center justify-center ${corner} bg-black px-6 text-center text-xs text-white/80`} role="alert">
         This video can&apos;t be played right now. Please try again later.
       </div>
     ) : null;
   }
   return (
-    <div className="aspect-video w-full overflow-hidden rounded-2xl bg-black">
+    <div className={`aspect-video w-full overflow-hidden ${corner} bg-black`}>
       {video.kind === "iframe" ? (
         <iframe
           src={video.src}

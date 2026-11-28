@@ -4,20 +4,18 @@ import React, { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 
 /**
- * Accessible dialog: traps focus inside, closes on Esc or backdrop click,
- * locks page scroll, and returns focus to whatever opened it.
+ * Dialog behaviour shared by every modal: focus starts on `initialFocusRef`, Tab stays
+ * inside `panelRef`, Esc calls onClose, page scroll is locked, and focus returns to
+ * whatever opened it.
  */
-export default function Modal({ open, onClose, title, subtitle, size = "lg", children, footer }) {
-  const panelRef = useRef(null);
-  const closeRef = useRef(null);
+export function useDialog(open, onClose, panelRef, initialFocusRef) {
   const openerRef = useRef(null);
-
   useEffect(() => {
     if (!open) return undefined;
     openerRef.current = document.activeElement;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    closeRef.current?.focus();
+    initialFocusRef.current?.focus();
 
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
@@ -46,7 +44,18 @@ export default function Modal({ open, onClose, title, subtitle, size = "lg", chi
       document.body.style.overflow = previousOverflow;
       if (openerRef.current && typeof openerRef.current.focus === "function") openerRef.current.focus();
     };
-  }, [open, onClose]);
+  }, [open, onClose, panelRef, initialFocusRef]);
+}
+
+/**
+ * Accessible dialog: traps focus inside, closes on Esc or backdrop click,
+ * locks page scroll, and returns focus to whatever opened it.
+ */
+export default function Modal({ open, onClose, title, subtitle, size = "lg", children, footer }) {
+  const panelRef = useRef(null);
+  const closeRef = useRef(null);
+
+  useDialog(open, onClose, panelRef, closeRef);
 
   if (!open) return null;
   const width = { md: "max-w-lg", lg: "max-w-2xl", xl: "max-w-4xl" }[size] || "max-w-2xl";

@@ -37,7 +37,16 @@ import {
   RotateCcw,
 } from "lucide-react";
 import InteractiveAuthBackdrop from "./InteractiveAuthBackdrop";
-import ProjectLinks, { VideoPlayer, VideoPreview } from "./ProjectLinks";
+import ProjectLinks, { VideoPlayer } from "./ProjectLinks";
+import {
+  Billboard,
+  ProjectDetail,
+  ProjectRow,
+  ProjectTile,
+  rowsFor,
+  usePreviewSetting,
+  useVideoSources,
+} from "./ProjectTheatre";
 import Modal from "./Modal";
 import StudentProfile from "./StudentProfile";
 import AiAnalysisPanel from "./AiAnalysisPanel";
@@ -1537,6 +1546,109 @@ export default function GeekArchiveApp() {
   const sentRequestFor = (projectId) =>
     contactRequests.find((request) => request.projectId === projectId && request.orgId === user?.id);
 
+  // "Message sent / interested / not available" for a project this organisation contacted.
+  const contactStatusFor = (proto) => {
+    const sent = sentRequestFor(proto.id);
+    if (!sent) return null;
+    const statusText = {
+      new: "Message sent · waiting for the student to reply",
+      interested: `${proto.ownerName || "The student"} is interested and will contact you at ${sent.replyEmail}`,
+      declined: `${proto.ownerName || "The student"} isn't available for this right now`,
+    }[sent.status];
+    return (
+      <p
+        role="status"
+        className={`inline-flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ${
+          sent.status === "interested"
+            ? "bg-[#EEF4EE] text-[#2F472F]"
+            : sent.status === "declined"
+            ? "bg-[#F5F1EC] text-[#6E5A4F]"
+            : "bg-[#FBF5E6] text-[#6B5320]"
+        }`}
+      >
+        {sent.status === "interested" ? (
+          <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
+        ) : (
+          <Mail className="mt-px h-3.5 w-3.5 shrink-0" />
+        )}
+        <span>{statusText}</span>
+      </p>
+    );
+  };
+
+  const renderContactForm = (proto) => (
+      <form
+        onSubmit={(e) => handleSendContactRequest(e, proto)}
+        aria-label={`Message to ${proto.ownerName || "the student"}`}
+        className="space-y-3"
+      >
+        <p className="text-xs text-[#6E5A4F]">
+          Your message and contact details go to {proto.ownerName || "the student"} only. Their
+          own contact details stay private until they reply.
+        </p>
+        <label className="block">
+          <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Message</span>
+          <textarea
+            rows={4}
+            required
+            minLength={CONTACT_MESSAGE_MIN}
+            maxLength={CONTACT_MESSAGE_MAX}
+            value={contactDraft.message}
+            onChange={(e) => setContactDraft((d) => ({ ...d, message: e.target.value }))}
+            className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3 text-sm"
+          />
+        </label>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Your email</span>
+            <input
+              type="email"
+              required
+              value={contactDraft.email}
+              onChange={(e) => setContactDraft((d) => ({ ...d, email: e.target.value }))}
+              placeholder="you@business.co.za"
+              className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-[#3B2314]">
+              Phone <span className="font-normal text-[#8A786D]">(optional)</span>
+            </span>
+            <input
+              type="tel"
+              value={contactDraft.phone}
+              onChange={(e) => setContactDraft((d) => ({ ...d, phone: e.target.value }))}
+              placeholder="e.g. 071 234 5678"
+              className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
+            />
+          </label>
+        </div>
+        {contactError && (
+          <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
+            {contactError}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={contactSending}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#5E7A5E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
+          >
+            <Send className="h-3.5 w-3.5" />
+            {contactSending ? "Sending…" : "Send message"}
+          </button>
+          <button
+            type="button"
+            onClick={closeContactForm}
+            disabled={contactSending}
+            className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+  );
+
   const handleSendContactRequest = async (e, project) => {
     e.preventDefault();
     if (isYouth || contactSending) return;
@@ -2507,6 +2619,18 @@ export default function GeekArchiveApp() {
       (!activeCategory || (proto.category || "other") === activeCategory) &&
       Boolean(matchProject(proto, discoverQuery))
   );
+  // Streaming-style Discover: playable sources for every tile, and the viewer's preview setting.
+  const sourceFor = useVideoSources(youthPostedProjects);
+  const [previewsOn, setPreviewsOn] = usePreviewSetting();
+  const discoverRows = rowsFor(youthPostedProjects);
+  const featuredProject = discoverRows[0]?.projects[0] || null;
+  const ownerLineFor = (proto) =>
+    proto.ownerRole === "Youth Pod Talent" && proto.ownerName
+      ? `By ${proto.ownerName}${talentRoleFor(proto.ownerId) ? ` · ${talentRoleFor(proto.ownerId)}` : ""}`
+      : "";
+  const tileMetaFor = (proto) =>
+    [proto.ownerName, CATEGORY_BY_ID[proto.category]?.label || proto.domain].filter(Boolean).join(" · ");
+
   // Requests this student has received, newest first; "new" ones count as unread.
   const myContactRequests = contactRequests.filter(
     (request) => isYouth && user?.id && request.studentId === user.id
@@ -3666,8 +3790,177 @@ export default function GeekArchiveApp() {
           />
         )}
 
+        {activeTab === "discover" && !isYouth && isVerified && (
+          <section aria-label="Discover projects" className="overflow-hidden rounded-2xl bg-[#0C1410] text-white shadow-[0_30px_80px_rgba(9,25,17,0.35)] sm:rounded-3xl">
+            <div className="space-y-4 border-b border-white/10 px-5 py-5 sm:px-8">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-black tracking-tight">Discover</h2>
+                  <p className="mt-0.5 text-xs text-white/60">
+                    Projects by students &amp; developers. Rest on a project to preview it; click to watch.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white/80">
+                    {youthPostedProjects.length} posted
+                  </span>
+                  <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-white/80">
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      checked={previewsOn}
+                      onChange={(e) => setPreviewsOn(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <span
+                      aria-hidden="true"
+                      className="relative h-5 w-9 rounded-full bg-white/20 transition peer-checked:bg-[#8DB46A] peer-focus-visible:ring-2 peer-focus-visible:ring-[#C8DD9F] after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform after:duration-200 peer-checked:after:translate-x-4"
+                    />
+                    Autoplay previews
+                  </label>
+                </div>
+              </div>
+
+              {youthPostedProjects.length > 0 && (
+                <>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] sm:items-end">
+                    <div>
+                      <span className="mb-1 block text-xs font-semibold text-white/70">Search</span>
+                      <SearchSuggest
+                        value={discoverQuery}
+                        onChange={setDiscoverQuery}
+                        projects={youthPostedProjects}
+                        onPick={(project) => setOpenProjectId(project.id)}
+                        placeholder="Start typing: a project, category, skill or person"
+                      />
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold text-white/70">Skill</span>
+                      <select
+                        value={activeSkill}
+                        onChange={(e) => setDiscoverSkill(e.target.value)}
+                        disabled={!skillOptions.length}
+                        className="w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 text-sm text-white disabled:opacity-60"
+                      >
+                        <option value="" className="text-black">All skills</option>
+                        {skillOptions.map((option) => (
+                          <option key={option.key} value={option.key} className="text-black">
+                            {option.label} ({option.count})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={clearDiscoverFilters}
+                      disabled={!hasDiscoverFilters}
+                      className="rounded-xl border border-white/20 bg-transparent px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                  {categoryOptions.length > 0 && (
+                    <div role="group" aria-label="Categories" className="-mx-5 flex gap-2 overflow-x-auto px-5 pb-1 [scrollbar-width:none] sm:mx-0 sm:flex-wrap sm:px-0 [&::-webkit-scrollbar]:hidden">
+                      <button
+                        type="button"
+                        aria-pressed={!activeCategory}
+                        onClick={() => setDiscoverCategory("")}
+                        className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                          !activeCategory ? "bg-white text-[#0C1410]" : "bg-white/10 text-white/80 hover:bg-white/20"
+                        }`}
+                      >
+                        All ({youthPostedProjects.length})
+                      </button>
+                      {categoryOptions.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          aria-pressed={activeCategory === c.id}
+                          onClick={() => setDiscoverCategory(activeCategory === c.id ? "" : c.id)}
+                          className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                            activeCategory === c.id ? "bg-white text-[#0C1410]" : "bg-white/10 text-white/80 hover:bg-white/20"
+                          }`}
+                        >
+                          <span aria-hidden="true">{c.emoji}</span> {c.label} ({categoryCounts[c.id]})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {hasDiscoverFilters && (
+                    <p className="text-xs text-white/60" aria-live="polite">
+                      Showing {discoveredProjects.length} of {youthPostedProjects.length} projects
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+
+            {youthPostedProjects.length === 0 ? (
+              <div className="px-6 py-16 text-center">
+                <p className="text-lg font-bold">No student projects posted yet</p>
+                <p className="mt-1 text-sm text-white/60">When students and developers post their work, it will appear here.</p>
+              </div>
+            ) : hasDiscoverFilters ? (
+              discoveredProjects.length === 0 ? (
+                <div className="px-6 py-16 text-center">
+                  <p className="text-lg font-bold">No projects match your filters</p>
+                  <p className="mt-1 text-sm text-white/60">Try a different category, skill or search.</p>
+                  <button
+                    type="button"
+                    onClick={clearDiscoverFilters}
+                    className="mt-4 rounded-lg bg-white px-4 py-2 text-sm font-bold text-[#0C1410] hover:bg-white/85"
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              ) : (
+                <div role="list" aria-label="Matching projects" className="grid grid-cols-1 gap-x-3 gap-y-5 px-5 py-6 sm:grid-cols-2 sm:px-8 lg:grid-cols-3 xl:grid-cols-4">
+                  {discoveredProjects.map((proto) => (
+                    <ProjectTile
+                      key={proto.id}
+                      wide
+                      project={proto}
+                      source={sourceFor(proto)}
+                      previews={previewsOn}
+                      meta={tileMetaFor(proto)}
+                      onOpen={() => setOpenProjectId(proto.id)}
+                    />
+                  ))}
+                </div>
+              )
+            ) : (
+              <>
+                {featuredProject && (
+                  <Billboard
+                    key={featuredProject.id}
+                    project={featuredProject}
+                    source={sourceFor(featuredProject)}
+                    previews={previewsOn}
+                    paused={Boolean(openProject || viewProfileUserId)}
+                    ownerLine={ownerLineFor(featuredProject)}
+                    onOpen={() => setOpenProjectId(featuredProject.id)}
+                  />
+                )}
+                <div className="relative z-10 -mt-6 space-y-2 pb-8">
+                  {discoverRows.map((row) => (
+                    <ProjectRow
+                      key={row.title}
+                      title={row.title}
+                      projects={row.projects}
+                      sourceFor={sourceFor}
+                      previews={previewsOn && !openProject}
+                      metaFor={tileMetaFor}
+                      onOpen={(id) => setOpenProjectId(id)}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
         {activeTab === "discover" && !isYouth && isVerified && youthPostedProjects.length > 0 && (
-          <div className="mb-4">
+          <div className="mt-6">
             <AiRecommendPanel
               projects={youthPostedProjects}
               orgType={orgType}
@@ -3675,308 +3968,6 @@ export default function GeekArchiveApp() {
               onOpenProject={(id) => setOpenProjectId(id)}
             />
           </div>
-        )}
-
-        {activeTab === "discover" && !isYouth && isVerified && (
-          <section className="space-y-4">
-            <div className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-bold text-[#2C1A10]">Discover projects by students &amp; developers</h2>
-                  <p className="mt-1 text-xs text-[#6E5A4F]">
-                    Projects posted by youth talent. Only SMMEs, NGOs and sponsors can see this list.
-                  </p>
-                </div>
-                <span className="rounded-full bg-[#EEF4EE] px-3 py-1 text-xs font-semibold text-[#3F5D3F]">
-                  {youthPostedProjects.length} posted
-                </span>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] sm:items-end">
-                <div>
-                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Search</span>
-                  <SearchSuggest
-                    value={discoverQuery}
-                    onChange={setDiscoverQuery}
-                    projects={youthPostedProjects}
-                    onPick={(project) => setOpenProjectId(project.id)}
-                    placeholder="Start typing: a project, category, skill or person"
-                  />
-                </div>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Skill</span>
-                  <select
-                    value={activeSkill}
-                    onChange={(e) => setDiscoverSkill(e.target.value)}
-                    disabled={!skillOptions.length}
-                    className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2.5 text-sm disabled:opacity-60"
-                  >
-                    <option value="">All skills</option>
-                    {skillOptions.map((option) => (
-                      <option key={option.key} value={option.key}>
-                        {option.label} ({option.count})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  onClick={clearDiscoverFilters}
-                  disabled={!hasDiscoverFilters}
-                  className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2.5 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Clear filters
-                </button>
-              </div>
-              {categoryOptions.length > 0 && (
-                <div role="group" aria-label="Categories" className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    aria-pressed={!activeCategory}
-                    onClick={() => setDiscoverCategory("")}
-                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-                      !activeCategory ? "bg-[#163126] text-[#C8DD9F]" : "bg-[#F4F7F1] text-[#3E4F46] hover:bg-[#E8EEE5]"
-                    }`}
-                  >
-                    All ({youthPostedProjects.length})
-                  </button>
-                  {categoryOptions.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      aria-pressed={activeCategory === c.id}
-                      onClick={() => setDiscoverCategory(activeCategory === c.id ? "" : c.id)}
-                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-                        activeCategory === c.id ? "bg-[#163126] text-[#C8DD9F]" : "bg-[#F4F7F1] text-[#3E4F46] hover:bg-[#E8EEE5]"
-                      }`}
-                    >
-                      <span aria-hidden="true">{c.emoji}</span> {c.label} ({categoryCounts[c.id]})
-                    </button>
-                  ))}
-                </div>
-              )}
-              {youthPostedProjects.length > 0 && (
-                <p className="mt-3 text-xs text-[#6E5A4F]" aria-live="polite">
-                  Showing {discoveredProjects.length} of {youthPostedProjects.length} projects
-                </p>
-              )}
-            </div>
-
-            {discoveredProjects.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-[#C8D4C7] bg-white/70 p-8 text-center">
-                <p className="font-semibold text-[#2C1A10]">
-                  {youthPostedProjects.length ? "No projects match your filters" : "No student projects posted yet"}
-                </p>
-                <p className="mt-1 text-sm text-[#6E5A4F]">
-                  {youthPostedProjects.length
-                    ? "Try a different category, skill or search."
-                    : "When students and developers post their work, it will appear here."}
-                </p>
-                {youthPostedProjects.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearDiscoverFilters}
-                    className="mt-3 text-xs font-semibold text-[#3F5D3F] hover:underline"
-                  >
-                    Clear filters
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {discoveredProjects.map((proto) => (
-                  <article key={proto.id} className="flex flex-col rounded-2xl border border-[#E6DFD5] bg-white p-5">
-                    <VideoPreview project={proto} onOpen={() => setOpenProjectId(proto.id)} />
-                    {(proto.category || proto.domain) && (
-                      <span className="text-xs font-semibold text-[#5E7A5E]">
-                        {CATEGORY_BY_ID[proto.category]?.emoji} {categoryLabel(proto.category) || proto.domain}
-                      </span>
-                    )}
-                    <h3 className="text-base font-bold text-[#2C1A10]">
-                      <button
-                        type="button"
-                        onClick={() => setOpenProjectId(proto.id)}
-                        className="text-left hover:text-[#3F5D3F] hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8DD9F]"
-                      >
-                        {proto.title}
-                      </button>
-                    </h3>
-                    <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-[#6E5A4F]">
-                      <Users className="h-3.5 w-3.5" />
-                      Posted by <span className="font-semibold text-[#3B2314]">{proto.ownerName}</span>
-                      {talentRoleFor(proto.ownerId) && <span>· {talentRoleFor(proto.ownerId)}</span>}
-                      {proto.postedAt && (
-                        <span>· {new Date(proto.postedAt).toLocaleDateString()}</span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => openStudentProfile(proto.ownerId)}
-                        aria-label={`View ${proto.ownerName || "student"}'s profile`}
-                        className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#EEF4EE] px-2 py-0.5 font-semibold text-[#2F472F] hover:bg-[#DDEBD8]"
-                      >
-                        <UserRound className="h-3 w-3" />
-                        View profile
-                      </button>
-                    </p>
-                    {proto.summary && (
-                      <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.summary}</p>
-                    )}
-                    {proto.description && proto.description !== proto.summary && (
-                      <details className="mt-2">
-                        <summary className="cursor-pointer text-xs font-semibold text-[#3F5D3F]">
-                          Read full description
-                        </summary>
-                        <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">{proto.description}</p>
-                      </details>
-                    )}
-                    {proto.stack.length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {proto.stack.map((tech) => {
-                          const selected = activeSkill === tech.toLowerCase();
-                          return (
-                            <button
-                              key={tech}
-                              type="button"
-                              onClick={() => setDiscoverSkill(selected ? "" : tech.toLowerCase())}
-                              aria-pressed={selected}
-                              title={selected ? "Show all skills" : `Show only ${tech} projects`}
-                              className={`rounded-md px-2.5 py-0.5 text-xs font-medium transition ${
-                                selected
-                                  ? "bg-[#163126] text-[#C8DD9F]"
-                                  : "bg-[#EEF4EE] text-[#3F5D3F] hover:bg-[#DDEBD8]"
-                              }`}
-                            >
-                              {tech}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div className="mt-4">
-                      <ProjectLinks project={proto} onOpen={() => setOpenProjectId(proto.id)} />
-                    </div>
-
-                    <div className="mt-4 border-t border-[#EEE8E1] pt-4">
-                      {(() => {
-                        const sent = sentRequestFor(proto.id);
-                        if (sent) {
-                          const statusText = {
-                            new: "Message sent · waiting for the student to reply",
-                            interested: `${proto.ownerName || "The student"} is interested and will contact you at ${sent.replyEmail}`,
-                            declined: `${proto.ownerName || "The student"} isn't available for this right now`,
-                          }[sent.status];
-                          return (
-                            <p
-                              role="status"
-                              className={`inline-flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ${
-                                sent.status === "interested"
-                                  ? "bg-[#EEF4EE] text-[#2F472F]"
-                                  : sent.status === "declined"
-                                  ? "bg-[#F5F1EC] text-[#6E5A4F]"
-                                  : "bg-[#FBF5E6] text-[#6B5320]"
-                              }`}
-                            >
-                              {sent.status === "interested" ? (
-                                <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
-                              ) : (
-                                <Mail className="mt-px h-3.5 w-3.5 shrink-0" />
-                              )}
-                              <span>{statusText}</span>
-                            </p>
-                          );
-                        }
-                        if (contactFormProjectId !== proto.id) {
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => openContactForm(proto)}
-                              aria-label={`Contact ${proto.ownerName || "the student"} about ${proto.title}`}
-                              className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
-                            >
-                              <MessageSquare className="h-3.5 w-3.5" />
-                              Contact student
-                            </button>
-                          );
-                        }
-                        return (
-                          <form
-                            onSubmit={(e) => handleSendContactRequest(e, proto)}
-                            aria-label={`Message to ${proto.ownerName || "the student"}`}
-                            className="space-y-3"
-                          >
-                            <p className="text-xs text-[#6E5A4F]">
-                              Your message and contact details go to {proto.ownerName || "the student"} only. Their
-                              own contact details stay private until they reply.
-                            </p>
-                            <label className="block">
-                              <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Message</span>
-                              <textarea
-                                rows={4}
-                                required
-                                minLength={CONTACT_MESSAGE_MIN}
-                                maxLength={CONTACT_MESSAGE_MAX}
-                                value={contactDraft.message}
-                                onChange={(e) => setContactDraft((d) => ({ ...d, message: e.target.value }))}
-                                className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3 text-sm"
-                              />
-                            </label>
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                              <label className="block">
-                                <span className="mb-1 block text-xs font-semibold text-[#3B2314]">Your email</span>
-                                <input
-                                  type="email"
-                                  required
-                                  value={contactDraft.email}
-                                  onChange={(e) => setContactDraft((d) => ({ ...d, email: e.target.value }))}
-                                  placeholder="you@business.co.za"
-                                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
-                                />
-                              </label>
-                              <label className="block">
-                                <span className="mb-1 block text-xs font-semibold text-[#3B2314]">
-                                  Phone <span className="font-normal text-[#8A786D]">(optional)</span>
-                                </span>
-                                <input
-                                  type="tel"
-                                  value={contactDraft.phone}
-                                  onChange={(e) => setContactDraft((d) => ({ ...d, phone: e.target.value }))}
-                                  placeholder="e.g. 071 234 5678"
-                                  className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] px-3 py-2 text-sm"
-                                />
-                              </label>
-                            </div>
-                            {contactError && (
-                              <p role="alert" className="rounded-lg border border-[#E7C3BC] bg-[#FBEDEA] px-3 py-2 text-xs text-[#8A2C1E]">
-                                {contactError}
-                              </p>
-                            )}
-                            <div className="flex gap-2">
-                              <button
-                                type="submit"
-                                disabled={contactSending}
-                                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#5E7A5E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#4C654C] disabled:cursor-wait disabled:opacity-70"
-                              >
-                                <Send className="h-3.5 w-3.5" />
-                                {contactSending ? "Sending…" : "Send message"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={closeContactForm}
-                                disabled={contactSending}
-                                className="rounded-xl border border-[#D8CFC4] bg-white px-4 py-2 text-sm font-semibold text-[#3B2314] hover:bg-[#FAF8F5]"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </form>
-                        );
-                      })()}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
         )}
 
         {activeTab === "messages" && isYouth && (
@@ -4855,101 +4846,72 @@ export default function GeekArchiveApp() {
       </main>
 
       {openProject && (
-        <Modal
-          open
-          onClose={() => setOpenProjectId(null)}
-          title={openProject.title}
-          subtitle={[
-            openProject.ownerName && `Posted by ${openProject.ownerName}`,
-            openProject.domain,
-            openProject.postedAt && new Date(openProject.postedAt).toLocaleDateString(),
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-          size="xl"
-          footer={
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
+        <ProjectDetail
+          key={openProject.id}
+          project={openProject}
+          onClose={() => {
+            setOpenProjectId(null);
+            if (!contactSending) closeContactForm();
+          }}
+          ownerLine={ownerLineFor(openProject)}
+          actions={
+            <>
+              {!isYouth && openProject.ownerRole === "Youth Pod Talent" && (
+                contactStatusFor(openProject) || (
+                  contactFormProjectId !== openProject.id && (
+                    <button
+                      type="button"
+                      onClick={() => openContactForm(openProject)}
+                      aria-label={`Contact ${openProject.ownerName || "the student"} about ${openProject.title}`}
+                      className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-bold text-[#0C1410] hover:bg-white/85"
+                    >
+                      <MessageSquare className="h-4 w-4" />
+                      Contact {openProject.ownerName?.split(" ")[0] || "student"}
+                    </button>
+                  )
+                )
+              )}
               {!isYouth && openProject.ownerRole === "Youth Pod Talent" && (
                 <button
                   type="button"
                   onClick={() => openStudentProfile(openProject.ownerId)}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#163126] hover:bg-[#FAF8F5]"
+                  className="inline-flex items-center gap-2 rounded-lg bg-white/15 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/25"
                 >
-                  <UserRound className="h-3.5 w-3.5" />
+                  <UserRound className="h-4 w-4" />
                   View {openProject.ownerName?.split(" ")[0] || "student"}&apos;s profile
                 </button>
               )}
-              {parseGitHubRepo(openProject.repo) ? (
+              {parseGitHubRepo(openProject.repo) && (
                 <a
                   href={parseGitHubRepo(openProject.repo).url}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#163126] hover:bg-[#FAF8F5]"
+                  className="inline-flex items-center gap-2 rounded-lg bg-white/15 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/25"
                 >
-                  <Github className="h-3.5 w-3.5" />
+                  <Github className="h-4 w-4" />
                   Open on GitHub
                 </a>
-              ) : (
-                <span className="text-xs text-[#8A786D]">No GitHub repository added yet.</span>
               )}
-              </div>
-              {!isYouth && openProject.ownerRole === "Youth Pod Talent" && !sentRequestFor(openProject.id) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const project = openProject;
-                    setOpenProjectId(null);
-                    setActiveTab("discover");
-                    openContactForm(project);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#3B2314] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#2C1A10]"
-                >
-                  <MessageSquare className="h-3.5 w-3.5" />
-                  Contact {openProject.ownerName?.split(" ")[0] || "student"}
-                </button>
-              )}
-            </div>
+            </>
           }
         >
-          {hasDemoVideo(openProject) ? (
-            <VideoPlayer key={openProject.id} project={openProject} autoplay />
-          ) : (
-            <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] px-4 py-3 text-xs text-[#6E5A4F]">
-              No demo video yet — you can ask the student for one when you get in touch.
-            </p>
-          )}
-          {openProject.summary && (
-            <p className="mt-5 text-base font-medium leading-relaxed text-[#2C1A10]">{openProject.summary}</p>
-          )}
-          {openProject.description && openProject.description !== openProject.summary && (
-            <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-[#5C493E]">
-              {openProject.description}
-            </p>
-          )}
-          {openProject.stack.length > 0 && (
-            <div className="mt-4">
-              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Built with</p>
-              <div className="flex flex-wrap gap-1.5">
-                {openProject.stack.map((tech) => (
-                  <span key={tech} className="rounded-md bg-[#EEF4EE] px-2.5 py-1 text-xs font-medium text-[#3F5D3F]">
-                    {tech}
-                  </span>
-                ))}
-              </div>
+          {!isYouth && openProject.ownerRole === "Youth Pod Talent" && contactFormProjectId === openProject.id && !sentRequestFor(openProject.id) && (
+            <div className="rounded-2xl bg-white p-5 text-[#2C1A10]">
+              <h3 className="mb-3 text-sm font-bold">Message {openProject.ownerName?.split(" ")[0] || "the student"}</h3>
+              {renderContactForm(openProject)}
             </div>
           )}
           {!isYouth && isVerified && (
-            <div className="mt-6">
+            <div className="overflow-hidden rounded-2xl bg-white text-[#2C1A10]">
               <AiAnalysisPanel project={openProject} />
             </div>
           )}
           {!isYouth && verificationKnown && !isVerified && (
-            <p className="mt-6 rounded-xl border border-[#E8D9B5] bg-[#FBF5E6] px-4 py-3 text-xs text-[#6B5320]">
+            <p className="rounded-xl border border-[#E8D9B5] bg-[#FBF5E6] px-4 py-3 text-xs text-[#6B5320]">
               Verify your organisation to run an AI analysis of this project.
             </p>
           )}
-        </Modal>
+        </ProjectDetail>
       )}
 
       {user && (

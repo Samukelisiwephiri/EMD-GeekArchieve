@@ -20,7 +20,7 @@ Open the file in a browser after cloning; GitHub shows HTML files as source code
 | Sign up with full details (name, SA mobile, student/developer/IT, institution) | Sign up with full details (contact person, SA mobile, organisation name, SMME/NGO, CIPC/NPO number) | Review verification requests (approve, or reject with a reason the person sees) |
 | Verify: university email (instant), GitHub, or admin review | Verify: CIPC / NPO number + admin review | Accounts tab: everyone who signed up, filter "Not verified" / "Email not confirmed"; confirm an email whose confirmation never arrived; verify an account directly |
 | | | Team tab: invite admins by email, cancel invites, remove admins |
-| Pick best projects from GitHub; upload a demo video (MP4/WebM/MOV, 50 MB) or link one | Discover by category, search-as-you-type | Admin banner: requests waiting, admins, open invites |
+| Pick best projects from GitHub; upload a demo video (MP4/WebM/MOV, 50 MB) or link one | Discover like a streaming service: a featured project playing in the background, rows by category, tiles that preview on hover, a cinematic project view (previews can be switched off to save data); search-as-you-type | Admin banner: requests waiting, admins, open invites |
 | Show/hide each project; edit/delete (videos are deleted with it) | Watch demos (pop up and play), view student profiles | |
 | Talent profile (edit/delete) | AI project analysis & AI recommendations | |
 | Messages from organisations; reply by email or "Not now" | Contact students (privacy-preserving) | |

@@ -79,3 +79,24 @@ export async function resolveDemoVideo(project, { autoplay = false } = {}) {
   }
   return toVideoEmbed(project?.demoVideo, { autoplay });
 }
+
+/**
+ * Signed links for many uploaded videos in one request (the Discover rows).
+ * @returns {Promise<Record<string, string>>} path -> playable URL (missing paths are left out)
+ */
+export async function signDemoVideos(paths) {
+  const unique = [...new Set((paths || []).filter(Boolean))];
+  const out = {};
+  const remote = [];
+  for (const path of unique) {
+    if (path.startsWith("blob:") || !supabase) out[path] = path;
+    else remote.push(path);
+  }
+  if (remote.length) {
+    const { data } = await supabase.storage.from(DEMO_VIDEO_BUCKET).createSignedUrls(remote, SIGNED_URL_SECONDS);
+    for (const item of data || []) {
+      if (item?.signedUrl && !item.error) out[item.path] = item.signedUrl;
+    }
+  }
+  return out;
+}
