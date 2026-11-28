@@ -349,9 +349,9 @@ function podStageFor(pod) {
 }
 
 const MEMBER_STATUS = {
-  invited: { label: "Invited · waiting for an answer", className: "bg-[#FBF6E6] text-[#6B5420] border-[#E8D9A8]" },
+  invited: { label: "Offer sent · waiting for an answer", className: "bg-[#FBF6E6] text-[#6B5420] border-[#E8D9A8]" },
   accepted: { label: "Accepted", className: "bg-[#EEF7E8] text-[#2F5A2F] border-[#B9DBA9]" },
-  declined: { label: "Declined", className: "bg-[#FBEDEA] text-[#8A2C1E] border-[#E7C3BC]" },
+  declined: { label: "Rejected", className: "bg-[#FBEDEA] text-[#8A2C1E] border-[#E7C3BC]" },
 };
 
 // Shown in place of features that need a verified account.
@@ -506,7 +506,7 @@ export default function GeekArchiveApp() {
       ]
     : isYouth
     ? [
-        { id: "opportunities", label: "Matched opportunities" },
+        { id: "opportunities", label: "Received offers" },
         { id: "talent", label: "My profile" },
         { id: "myprojects", label: "My projects" },
         { id: "messages", label: "Messages" },
@@ -541,6 +541,9 @@ export default function GeekArchiveApp() {
   const [videoUploading, setVideoUploading] = useState(false);
   const [respondingPodId, setRespondingPodId] = useState(null);
   const [podInviteError, setPodInviteError] = useState("");
+  // What an SMME/NGO offers the students when requesting a pod, plus a short message.
+  const [podOffer, setPodOffer] = useState("");
+  const [podMessage, setPodMessage] = useState("");
   const [newRepoCategory, setNewRepoCategory] = useState("");
   const [newRepoDescription, setNewRepoDescription] = useState("");
   const [newRepoStack, setNewRepoStack] = useState("");
@@ -1577,7 +1580,7 @@ export default function GeekArchiveApp() {
     if (!supabase) return;
     const { data: podRows, error } = await supabase
       .from("youth_pods")
-      .select("id, organization_id, prototype_id, stage, progress_pct, stakeholder_signed_off, signed_off_at, created_at, organization_name, project_title, need")
+      .select("id, organization_id, prototype_id, stage, progress_pct, stakeholder_signed_off, signed_off_at, created_at, organization_name, project_title, need, offer, offer_message")
       .order("created_at", { ascending: false });
     if (error || !podRows) return;
     const ids = podRows.map((p) => p.id);
@@ -1597,6 +1600,8 @@ export default function GeekArchiveApp() {
         prototypeId: p.prototype_id,
         projectTitle: p.project_title || "Project",
         need: p.need || "",
+        offer: p.offer || "",
+        offerMessage: p.offer_message || "",
         stage: p.stage,
         progress: p.progress_pct,
         signedOff: p.stakeholder_signed_off,
@@ -1618,12 +1623,20 @@ export default function GeekArchiveApp() {
   const handleRequestPod = async () => {
     const project = matchedResult.prototype;
     if (isYouth || !isVerified || !project) return;
+    const offer = podOffer.trim();
+    const message = podMessage.trim();
+    if (offer.length < 5) {
+      setPodRequest({ status: "error", message: "Say what you're offering the students, e.g. a stipend or a reference letter." });
+      return;
+    }
     setPodRequest({ status: "loading", message: "" });
     if (supabase) {
       const { error } = await supabase.rpc("request_youth_pod", {
         p_org_type: orgType,
         p_raw_brief: problemBrief,
         p_prototype_id: project.id,
+        p_offer: offer,
+        p_message: message || null,
       });
       if (error) {
         setPodRequest({ status: "error", message: error.message });
@@ -1639,6 +1652,8 @@ export default function GeekArchiveApp() {
           prototypeId: project.id,
           projectTitle: project.title,
           need: problemBrief.trim(),
+          offer,
+          offerMessage: message,
           stage: "Waiting for students to accept",
           progress: 0,
           signedOff: false,
@@ -1657,8 +1672,10 @@ export default function GeekArchiveApp() {
     }
     setPodRequest({
       status: "done",
-      message: `Pod requested for ${project.title}. The matched students have been invited and will accept or decline.`,
+      message: `Offer sent for ${project.title}. The matched students will accept or reject it.`,
     });
+    setPodOffer("");
+    setPodMessage("");
     setActiveTab("pods");
   };
 
@@ -1892,7 +1909,7 @@ export default function GeekArchiveApp() {
             type="button"
             onClick={() => handlePodInviteResponse(pod, true)}
             disabled={busy}
-            aria-label={`Accept the pod for ${pod.projectTitle}`}
+            aria-label={`Accept the offer for ${pod.projectTitle}`}
             className="inline-flex items-center gap-1.5 rounded-xl bg-[#5E7A5E] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#4C654C] disabled:opacity-70"
           >
             <CheckCircle2 className="h-3.5 w-3.5" />
@@ -1902,11 +1919,11 @@ export default function GeekArchiveApp() {
             type="button"
             onClick={() => handlePodInviteResponse(pod, false)}
             disabled={busy}
-            aria-label={`Decline the pod for ${pod.projectTitle}`}
+            aria-label={`Reject the offer for ${pod.projectTitle}`}
             className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:opacity-70"
           >
             <X className="h-3.5 w-3.5" />
-            Decline
+            Reject
           </button>
         </div>
       );
@@ -2753,7 +2770,7 @@ export default function GeekArchiveApp() {
                 ) : (
                   <Layers className="h-4 w-4 text-[#5E7A5E]" />
                 )}
-                <span>{isYouth ? "My opportunities" : "Browse projects"}</span>
+                <span>{isYouth ? "My offers" : "Browse projects"}</span>
               </button>
             </div>
           </div>
@@ -2767,9 +2784,9 @@ export default function GeekArchiveApp() {
           <section className="rounded-2xl border border-[#E6DFD5] bg-white p-6">
             <div className="mb-5">
               <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
-              <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">Matched opportunities</h2>
+              <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">Received offers</h2>
               <p className="mt-1 text-sm text-[#6E5A4F]">
-                Organisations that want you in a pod. Accept to start working together, or decline.
+                SMMEs and NGOs that want to work with you. Read what they offer, then accept or reject.
               </p>
             </div>
             {podInviteError && (
@@ -2780,21 +2797,49 @@ export default function GeekArchiveApp() {
             {myOpenPods.length ? (
               <div className="space-y-3">
                 {myOpenPods.map((pod) => (
-                  <article key={pod.id} aria-label={`Opportunity: ${pod.projectTitle} for ${pod.orgName}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
-                    <p className="text-xs font-semibold text-[#5E7A5E]">{pod.orgName}</p>
-                    <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
-                    {pod.need && <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">“{pod.need}”</p>}
-                    <p className="mt-3 text-xs text-[#6E5A4F]">Your pod role: <strong>{myRoleIn(pod)?.role}</strong></p>
-                    <p className="mt-1 text-sm text-[#3B2314]">{myRoleIn(pod)?.task}</p>
+                  <article key={pod.id} aria-label={`Offer: ${pod.projectTitle} from ${pod.orgName}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-[#5E7A5E]">Offer from {pod.orgName}</p>
+                        <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
+                      </div>
+                      <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#3B2314] ring-1 ring-[#E6DFD5]">
+                        Your role: {myRoleIn(pod)?.role}
+                      </span>
+                    </div>
+                    <div className="mt-3 rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-3.5">
+                      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#3F5D3F]">
+                        <Briefcase className="h-3.5 w-3.5" /> What they offer
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-[#163126]">
+                        {pod.offer || "No offer details given. Ask them before you accept."}
+                      </p>
+                    </div>
+                    {pod.offerMessage && (
+                      <div className="mt-3 rounded-xl border border-[#E6DFD5] bg-white p-3.5">
+                        <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#6E5A4F]">
+                          <MessageSquare className="h-3.5 w-3.5" /> Message from {pod.orgName}
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-[#3B2314]">“{pod.offerMessage}”</p>
+                      </div>
+                    )}
+                    {pod.need && (
+                      <p className="mt-3 text-xs leading-relaxed text-[#5C493E]">
+                        <span className="font-semibold text-[#3B2314]">Their need:</span> {pod.need}
+                      </p>
+                    )}
+                    <p className="mt-1 text-xs text-[#5C493E]">
+                      <span className="font-semibold text-[#3B2314]">Your task:</span> {myRoleIn(pod)?.task}
+                    </p>
                     {renderInviteAnswer(pod)}
                   </article>
                 ))}
               </div>
             ) : (
               <div className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-7 text-center">
-                <p className="font-semibold text-[#2C1A10]">No matched opportunities yet</p>
+                <p className="font-semibold text-[#2C1A10]">No offers yet</p>
                 <p className="mt-1 text-sm text-[#6E5A4F]">
-                  Keep your profile and projects up to date. When an organisation requests a pod with you, it appears here.
+                  Keep your profile and projects up to date. When an SMME or NGO sends you an offer, it appears here.
                 </p>
               </div>
             )}
@@ -2966,9 +3011,35 @@ export default function GeekArchiveApp() {
                 <div className="rounded-xl border border-[#C8DD9F] bg-[#F4F9EC] p-4">
                   <p className="text-sm font-semibold text-[#163126]">Ready to start?</p>
                   <p className="mt-0.5 text-xs text-[#3E4F46]">
-                    Requesting the pod assigns verified students to {matchedResult.prototype.title} and tells them about your need.
+                    Send an offer to the matched verified students for {matchedResult.prototype.title}. They see your
+                    need, your offer and your message, and accept or reject it.
                   </p>
                   {isVerified ? (
+                    <>
+                    <label htmlFor="pod-offer" className="mt-3 block text-xs font-semibold text-[#163126]">
+                      What you&apos;re offering
+                    </label>
+                    <input
+                      id="pod-offer"
+                      type="text"
+                      maxLength={300}
+                      value={podOffer}
+                      onChange={(e) => setPodOffer(e.target.value)}
+                      placeholder="e.g. R4,000 stipend for 6 weeks + a reference letter"
+                      className="mt-1 w-full rounded-xl border border-[#C8D4C7] bg-white px-3.5 py-2 text-sm"
+                    />
+                    <label htmlFor="pod-message" className="mt-3 block text-xs font-semibold text-[#163126]">
+                      Message to the students <span className="font-normal text-[#5C6B5F]">(optional)</span>
+                    </label>
+                    <textarea
+                      id="pod-message"
+                      rows={2}
+                      maxLength={600}
+                      value={podMessage}
+                      onChange={(e) => setPodMessage(e.target.value)}
+                      placeholder="A short hello: who you are and why you'd like to work with them."
+                      className="mt-1 w-full rounded-xl border border-[#C8D4C7] bg-white px-3.5 py-2 text-sm"
+                    />
                     <button
                       type="button"
                       onClick={handleRequestPod}
@@ -2976,8 +3047,9 @@ export default function GeekArchiveApp() {
                       className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[#163126] px-4 py-2 text-sm font-semibold text-[#C8DD9F] disabled:opacity-70"
                     >
                       <Users className="h-4 w-4" />
-                      {podRequest.status === "loading" ? "Requesting…" : "Request this pod"}
+                      {podRequest.status === "loading" ? "Sending…" : "Send offer"}
                     </button>
+                    </>
                   ) : (
                     <p className="mt-2 text-xs font-semibold text-[#6B5320]">Verify your organisation to request pods.</p>
                   )}
@@ -4122,6 +4194,11 @@ export default function GeekArchiveApp() {
                       </div>
                       <h3 className="mt-2 text-lg font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
                       {pod.need && <p className="text-xs text-[#6E5A4F]">“{pod.need}”</p>}
+                      {pod.offer && (
+                        <p className="mt-2 text-xs text-[#3B2314]">
+                          <span className="font-semibold">Your offer:</span> {pod.offer}
+                        </p>
+                      )}
                       <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-[#EFEAE4]">
                         <div className="h-full rounded-full bg-[#5E7A5E] transition-all" style={{ width: `${pod.progress}%` }} />
                       </div>

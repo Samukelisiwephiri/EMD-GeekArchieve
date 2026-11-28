@@ -96,6 +96,15 @@ alter table public.youth_pods add column if not exists organization_name text;
 alter table public.youth_pods add column if not exists project_title text;
 alter table public.youth_pods add column if not exists need text;
 alter table public.youth_pods add column if not exists signed_off_at timestamptz;
+-- What the organisation offers the students (e.g. a stipend) and a short personal message.
+alter table public.youth_pods add column if not exists offer text;
+alter table public.youth_pods add column if not exists offer_message text;
+alter table public.youth_pods drop constraint if exists youth_pods_offer_length;
+alter table public.youth_pods add constraint youth_pods_offer_length
+  check (offer is null or char_length(offer) <= 300);
+alter table public.youth_pods drop constraint if exists youth_pods_offer_message_length;
+alter table public.youth_pods add constraint youth_pods_offer_message_length
+  check (offer_message is null or char_length(offer_message) <= 600);
 
 alter table public.youth_pods
   add column if not exists organization_id uuid references public.profiles(id) on delete cascade;
@@ -584,10 +593,15 @@ create policy pod_members_read_participant on public.youth_pod_members
     )
   );
 
+-- Replaced by the version below, which also takes the offer and a message.
+drop function if exists public.request_youth_pod(text, text, uuid);
+
 create or replace function public.request_youth_pod(
   p_org_type text,
   p_raw_brief text,
-  p_prototype_id uuid
+  p_prototype_id uuid,
+  p_offer text,
+  p_message text default null
 )
 returns jsonb
 language plpgsql
@@ -613,6 +627,12 @@ begin
   if length(trim(coalesce(p_raw_brief, ''))) < 10 then
     raise exception 'Please provide at least 10 characters describing the need';
   end if;
+  if length(trim(coalesce(p_offer, ''))) < 5 then
+    raise exception 'Please say what you are offering the students';
+  end if;
+  if length(trim(p_offer)) > 300 or length(trim(coalesce(p_message, ''))) > 600 then
+    raise exception 'The offer or message is too long';
+  end if;
 
   if not exists (
     select 1 from public.prototypes
@@ -625,7 +645,9 @@ begin
   values (organization_uuid, p_org_type, trim(p_raw_brief), trim(p_raw_brief))
   returning id into brief_uuid;
 
-  insert into public.youth_pods (organization_id, prototype_id, brief_id, stage, organization_name, project_title, need)
+  insert into public.youth_pods (
+    organization_id, prototype_id, brief_id, stage, organization_name, project_title, need, offer, offer_message
+  )
   values (
     organization_uuid,
     p_prototype_id,
@@ -633,7 +655,9 @@ begin
     'Waiting for students to accept',
     (select display_name from public.profiles where id = organization_uuid),
     (select title from public.prototypes where id = p_prototype_id),
-    left(trim(p_raw_brief), 1500)
+    left(trim(p_raw_brief), 1500),
+    trim(p_offer),
+    nullif(trim(coalesce(p_message, '')), '')
   )
   returning id into pod_uuid;
 
@@ -790,7 +814,7 @@ grant execute on function public.get_current_profile_role() to authenticated;
 grant execute on function public.is_pod_member(uuid, uuid) to authenticated;
 grant execute on function public.has_assigned_prototype(uuid, uuid) to authenticated;
 grant execute on function public.is_matched_talent(uuid, uuid) to authenticated;
-grant execute on function public.request_youth_pod(text, text, uuid) to authenticated;
+grant execute on function public.request_youth_pod(text, text, uuid, text, text) to authenticated;
 grant execute on function public.sign_off_youth_pod(uuid) to authenticated;
 grant execute on function public.respond_to_pod_invite(uuid, boolean) to authenticated;
 
