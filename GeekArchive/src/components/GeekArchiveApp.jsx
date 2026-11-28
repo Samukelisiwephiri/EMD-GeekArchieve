@@ -11,7 +11,6 @@ import {
   ArrowRight,
   GitBranch,
   ShieldCheck,
-  Award,
   Layers,
   LogIn,
   LogOut,
@@ -335,14 +334,10 @@ const INITIAL_PROTOTYPES = [
 ];
 
 
-const INTERVIEW_PROMPTS = {
-  Developer:
-    "How did you structure your API and database access so a low-bandwidth mobile user can still record stock updates reliably without losing data?",
-  "UI/UX Designer":
-    "What changes did you make to simplify navigation and typography for a shop owner or NGO coordinator using an entry-level smartphone?",
-  "Business Student":
-    "How did you shape the pricing, handover steps, and value proposition so a small business can adopt the tool within its first week?",
-};
+// Everyday words that say nothing about the need ("we run a shop and ...").
+const MATCH_STOPWORDS = new Set(
+  "and the for our are was were with that this from have has had but not you your they them their its can will would could should into about just than then when what which who how all any each some very also only own run need needs want help lose lot lots".split(" ")
+);
 
 // Shown in place of features that need a verified account.
 function VerifyGate({ title, text, status, onVerify, className = "" }) {
@@ -501,7 +496,6 @@ export default function GeekArchiveApp() {
         { id: "myprojects", label: "My projects" },
         { id: "messages", label: "Messages" },
         { id: "pods", label: "My pods" },
-        { id: "career", label: "Career proof" },
       ]
     : [
         { id: "match", label: "Describe a need" },
@@ -535,9 +529,6 @@ export default function GeekArchiveApp() {
   const [newRepoStack, setNewRepoStack] = useState("");
   const [auditNote, setAuditNote] = useState("");
 
-  const [selectedRole, setSelectedRole] = useState("Developer");
-  const [candidateAnswer, setCandidateAnswer] = useState("");
-  const [interviewFeedback, setInterviewFeedback] = useState(null);
 
   // Profiles belong to an account (userId), not a name, so students can rename themselves.
   const ownTalentProfile = user?.id
@@ -554,7 +545,6 @@ export default function GeekArchiveApp() {
   const orgPods = pods.filter((pod) => pod.orgId && pod.orgId === user?.id);
   const myPods = pods.filter((pod) => pod.members.some((m) => m.userId && m.userId === user?.id));
   const myActivePods = myPods.filter((pod) => !pod.signedOff);
-  const myCredentials = myPods.filter((pod) => pod.signedOff);
   const myRoleIn = (pod) => pod.members.find((m) => m.userId === user?.id);
 
   // Real accounts: when Supabase keys are set, restore the session and follow sign-in changes.
@@ -909,7 +899,9 @@ export default function GeekArchiveApp() {
   const handleTranslateAndMatch = (e) => {
     e.preventDefault();
     const text = problemBrief.toLowerCase();
-    const searchTerms = text.split(/[^a-z0-9]+/).filter((term) => term.length > 2);
+    const searchTerms = text
+      .split(/[^a-z0-9]+/)
+      .filter((term) => term.length > 2 && !MATCH_STOPWORDS.has(term));
     const rankedProjects = prototypes
       .filter(
         (project) =>
@@ -920,6 +912,7 @@ export default function GeekArchiveApp() {
         const searchable = [
           project.title,
           project.domain,
+          categoryLabel(project.category),
           project.summary,
           project.description,
           ...(project.aliases || []),
@@ -927,13 +920,10 @@ export default function GeekArchiveApp() {
         ]
           .join(" ")
           .toLowerCase();
-        return {
-          project,
-          score: searchTerms.reduce(
-            (total, term) => total + (searchable.includes(term) ? 1 : 0),
-            0
-          ),
-        };
+        const relevance = searchTerms.reduce((total, term) => total + (searchable.includes(term) ? 1 : 0), 0);
+        // Real, verified student work that fits the brief comes before the built-in examples.
+        const isStudentWork = project.ownerRole === "Youth Pod Talent" && !project.illustrative;
+        return { project, score: relevance + (isStudentWork && relevance >= 2 ? 2 : 0) };
       })
       .sort((a, b) => b.score - a.score);
     const chosenProto = rankedProjects[0]?.score > 0 ? rankedProjects[0].project : null;
@@ -1656,22 +1646,6 @@ export default function GeekArchiveApp() {
           : p
       )
     );
-  };
-
-  const handleEvaluateInterview = (e) => {
-    e.preventDefault();
-    const wordCount = candidateAnswer.trim().split(/\s+/).filter(Boolean).length;
-    // Simple automatic practice scoring (length + concrete detail). Not an assessment.
-    const hasNumber = /\d/.test(candidateAnswer);
-    const base = wordCount >= 60 ? 7 : wordCount >= 25 ? 6 : wordCount >= 10 ? 4.5 : 3;
-    const score = `${Math.min(10, base + (hasNumber ? 1 : 0)).toFixed(1)} / 10`;
-    setInterviewFeedback({
-      score,
-      strength:
-        "You tied your explanation directly to real user constraints and practical delivery trade-offs.",
-      nextStep:
-        "Quantify one measurable outcome—such as load speed, reduced steps, or time saved per week—to make your answer recruiter-ready.",
-    });
   };
 
   const visiblePrototypes = prototypes.filter((proto) => {
@@ -2614,10 +2588,6 @@ export default function GeekArchiveApp() {
           </div>
         )}
 
-        {activeTab === "verifications" && isAdmin && (
-          <AdminVerifications requests={adminRequestList} onReview={handleReviewVerification} />
-        )}
-
         {(projectsLoading || projectsLoadError) && (
           <p
             role={projectsLoadError ? "alert" : "status"}
@@ -2656,7 +2626,6 @@ export default function GeekArchiveApp() {
                   ? [
                       ["Projects shown", myProjects.filter((p) => p.showcased !== false).length],
                       ["Active pods", myActivePods.length],
-                      ["Credentials", myCredentials.length],
                     ]
                   : [
                       ["Verified projects", youthPostedProjects.length],
@@ -2672,7 +2641,7 @@ export default function GeekArchiveApp() {
               </dl>
               <p className="max-w-xl text-sm leading-relaxed text-[#D5DED2]">
                 {isYouth
-                  ? "Create your talent profile, join a project pod, and turn shipped work into career proof."
+                  ? "Create your talent profile, show your best projects, and join a project pod."
                   : "Describe your organization’s challenge, explore existing projects, and meet a pod built to help."}
               </p>
             </div>
@@ -2692,6 +2661,10 @@ export default function GeekArchiveApp() {
             </div>
           </div>
         </section>
+
+        {activeTab === "verifications" && isAdmin && (
+          <AdminVerifications requests={adminRequestList} onReview={handleReviewVerification} />
+        )}
 
         {activeTab === "opportunities" && isYouth && (
           <section className="rounded-2xl border border-[#E6DFD5] bg-white p-6">
@@ -3598,8 +3571,10 @@ export default function GeekArchiveApp() {
                 <div key={proto.id} className="rounded-2xl border border-[#E6DFD5] bg-white p-5">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      {proto.domain && (
-                        <span className="text-xs font-semibold text-[#5E7A5E]">{proto.domain}</span>
+                      {(proto.domain || proto.category) && (
+                        <span className="text-xs font-semibold text-[#5E7A5E]">
+                          {proto.domain || `${CATEGORY_BY_ID[proto.category]?.emoji || ""} ${categoryLabel(proto.category)}`.trim()}
+                        </span>
                       )}
                       <h3 className="text-base font-bold text-[#2C1A10]">
                         <button
@@ -4078,99 +4053,6 @@ export default function GeekArchiveApp() {
           </section>
         )}
 
-        {activeTab === "career" && isYouth && (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            <div className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-5">
-              <div className="flex items-center gap-2">
-                <Award className="h-5 w-5 text-[#5E7A5E]" />
-                <h2 className="text-lg font-bold text-[#2C1A10]">Verified Career Proof</h2>
-              </div>
-              <p className="text-xs text-[#6E5A4F]">
-                When an organisation signs off a pod you worked in, it becomes a credential here — proof of real
-                work for a real client.
-              </p>
-              {myCredentials.length ? (
-                <ul className="space-y-2.5">
-                  {myCredentials.map((pod) => (
-                    <li key={pod.id} className="rounded-xl border border-[#B9DBA9] bg-[#EEF7E8] p-4">
-                      <p className="flex items-center gap-1.5 text-sm font-bold text-[#1F3D1F]">
-                        <BadgeCheck className="h-4 w-4" />
-                        {myRoleIn(pod)?.role} · {pod.projectTitle}
-                      </p>
-                      <p className="mt-0.5 text-xs text-[#2F472F]">
-                        Signed off by {pod.orgName}
-                        {pod.signedOffAt && ` on ${new Date(pod.signedOffAt).toLocaleDateString()}`}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="rounded-xl border border-dashed border-[#C8D4C7] bg-[#FAF8F5] p-4 text-xs text-[#6E5A4F]">
-                  No credentials yet. Finish a pod and get the organisation&apos;s sign-off to earn your first one.
-                </p>
-              )}
-            </div>
-
-            <form
-              onSubmit={handleEvaluateInterview}
-              className="space-y-4 rounded-2xl border border-[#E6DFD5] bg-white p-6 lg:col-span-7"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-lg font-bold text-[#2C1A10]">Role-Based Mock Interview Simulator</h2>
-                <div className="flex gap-1.5">
-                  {["Developer", "UI/UX Designer", "Business Student"].map((role) => (
-                    <button
-                      key={role}
-                      type="button"
-                      onClick={() => {
-                        setSelectedRole(role);
-                        setInterviewFeedback(null);
-                      }}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${
-                        selectedRole === role
-                          ? "bg-[#3B2314] text-white"
-                          : "bg-[#FAF8F5] text-[#5C493E] border border-[#E6DFD5]"
-                      }`}
-                    >
-                      {role}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-[#FAF8F5] p-4 border border-[#E6DFD5] text-sm font-medium text-[#2C1A10]">
-                {INTERVIEW_PROMPTS[selectedRole]}
-              </div>
-
-              <textarea
-                rows={4}
-                required
-                value={candidateAnswer}
-                onChange={(e) => setCandidateAnswer(e.target.value)}
-                placeholder="Write how you would answer this in an interview based on your pod work..."
-                className="w-full rounded-xl border border-[#D8CFC4] bg-[#FAF8F5] p-3.5 text-sm"
-              />
-
-              <button
-                type="submit"
-                className="rounded-xl bg-[#5E7A5E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#4C654C]"
-              >
-                Get practice feedback
-              </button>
-
-              {interviewFeedback && (
-                <div className="rounded-xl border border-[#C8DEC8] bg-[#EEF4EE] p-4 text-xs text-[#263B26] space-y-1">
-                  <p className="text-sm font-bold">Practice score: {interviewFeedback.score}</p>
-                  <p className="text-[11px] text-[#3F5D3F]">Automatic practice feedback based on length and concrete detail — not an official assessment.</p>
-                  <p>{interviewFeedback.strength}</p>
-                  <p>
-                    <strong>Tip:</strong> {interviewFeedback.nextStep}
-                  </p>
-                </div>
-              )}
-            </form>
-          </div>
-        )}
       </main>
 
       {openProject && (

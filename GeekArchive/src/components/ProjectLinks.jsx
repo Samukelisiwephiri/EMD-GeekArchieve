@@ -55,7 +55,8 @@ export function VideoPlayer({ project, autoplay = true }) {
       ) : (
         // eslint-disable-next-line jsx-a11y/media-has-caption
         <video
-          src={video.src}
+          // Not autoplaying (the student's own preview): jump to 0.1s so the first frame shows.
+          src={autoplay ? video.src : `${video.src}#t=0.1`}
           controls
           autoPlay={autoplay}
           playsInline
