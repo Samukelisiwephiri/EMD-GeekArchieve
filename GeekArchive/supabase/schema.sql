@@ -40,6 +40,11 @@ alter table public.prototypes add column if not exists is_illustrative boolean n
 alter table public.prototypes add column if not exists included_tailoring text[] not null default '{}';
 alter table public.prototypes add column if not exists active boolean not null default true;
 alter table public.prototypes add column if not exists created_by uuid references public.profiles(id) on delete set null;
+-- A person's projects go with their account (also when an account is deleted from the
+-- Supabase dashboard). "set null" couldn't work: the owner can never change after posting.
+alter table public.prototypes drop constraint if exists prototypes_created_by_fkey;
+alter table public.prototypes add constraint prototypes_created_by_fkey
+  foreign key (created_by) references public.profiles(id) on delete cascade;
 alter table public.prototypes add column if not exists owner_display_name text;
 alter table public.prototypes add column if not exists owner_role text;
 alter table public.prototypes add column if not exists demo_video_url text;
@@ -965,6 +970,12 @@ begin
   if caller_role = 'admin' and current_setting('geek_archive.reviewing', true) = 'on' then
     return new;
   end if;
+  -- The reviewing admin's account was deleted: the database clears reviewed_by and
+  -- nothing else may change.
+  if tg_op = 'UPDATE' and old.reviewed_by is not null and new.reviewed_by is null
+     and (to_jsonb(new) - 'reviewed_by') = (to_jsonb(old) - 'reviewed_by') then
+    return new;
+  end if;
 
   if caller is null or new.user_id <> caller then
     raise exception 'You can only verify your own account';
@@ -1437,3 +1448,104 @@ grant execute on function public.admin_list_team() to authenticated;
 grant execute on function public.admin_invite(text) to authenticated;
 grant execute on function public.admin_cancel_invite(text) to authenticated;
 grant execute on function public.admin_remove(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------------------
+-- Admin: every account (Accounts tab), confirming an email for someone whose
+-- confirmation email never arrived, and verifying an account directly.
+-- ---------------------------------------------------------------------------------
+create or replace function public.admin_list_accounts()
+returns table (
+  user_id uuid, display_name text, email text, role text, account_type text,
+  institution text, organization_name text, email_confirmed boolean,
+  verification_status text, created_at timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = public, auth, pg_temp
+as $$
+#variable_conflict use_column
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can list accounts';
+  end if;
+  return query
+    select p.id, p.display_name, u.email::text, p.role,
+           coalesce(d.account_type, v.account_type),
+           d.institution, d.organization_name,
+           u.email_confirmed_at is not null,
+           coalesce(v.status, 'unverified'),
+           coalesce(u.created_at, p.created_at)
+      from public.profiles p
+      left join auth.users u on u.id = p.id
+      left join public.account_details d on d.user_id = p.id
+      left join public.verifications v on v.user_id = p.id
+     order by coalesce(u.created_at, p.created_at) desc;
+end;
+$$;
+
+-- For when Supabase's confirmation email didn't arrive: the admin vouches for the address.
+create or replace function public.admin_confirm_email(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can confirm emails';
+  end if;
+  update auth.users set email_confirmed_at = coalesce(email_confirmed_at, now()) where id = p_user_id;
+  if not found then
+    raise exception 'No such account';
+  end if;
+end;
+$$;
+
+-- Verify an account directly (it doesn't need to have sent a request), using the
+-- details it registered with.
+create or replace function public.admin_verify_account(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  target_role text;
+  d public.account_details%rowtype;
+  kind text;
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can verify accounts';
+  end if;
+  select role into target_role from public.profiles where id = p_user_id;
+  if target_role is null then
+    raise exception 'No such account';
+  end if;
+  if target_role = 'admin' then
+    raise exception 'Admins don''t need to be verified';
+  end if;
+  select * into d from public.account_details where user_id = p_user_id;
+  kind := d.account_type;
+  if kind is null or (target_role = 'organization') <> (kind in ('smme', 'ngo')) then
+    kind := case when target_role = 'organization' then 'smme' else 'student' end;
+  end if;
+
+  perform set_config('geek_archive.reviewing', 'on', true);
+  insert into public.verifications (
+    user_id, account_type, method, status, institution, org_name, registration_number,
+    reviewed_at, reviewed_by
+  )
+  values (
+    p_user_id, kind, 'admin_review', 'verified', left(d.institution, 120), left(d.organization_name, 160),
+    d.registration_number, now(), auth.uid()
+  )
+  on conflict (user_id) do update
+    set status = 'verified', reviewed_at = now(), reviewed_by = auth.uid(), review_note = null;
+  perform set_config('geek_archive.reviewing', 'off', true);
+end;
+$$;
+
+grant execute on function public.admin_list_accounts() to authenticated;
+grant execute on function public.admin_confirm_email(uuid) to authenticated;
+grant execute on function public.admin_verify_account(uuid) to authenticated;

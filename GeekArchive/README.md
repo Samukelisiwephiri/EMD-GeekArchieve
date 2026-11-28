@@ -18,7 +18,8 @@ Open the file in a browser after cloning; GitHub shows HTML files as source code
 | For students & developers | For SMMEs, NGOs & sponsors | For admins |
 |---|---|---|
 | Sign up with full details (name, SA mobile, student/developer/IT, institution) | Sign up with full details (contact person, SA mobile, organisation name, SMME/NGO, CIPC/NPO number) | Review verification requests (approve, or reject with a reason the person sees) |
-| Verify: university email (instant), GitHub, or admin review | Verify: CIPC / NPO number + admin review | Team tab: invite admins by email, cancel invites, remove admins |
+| Verify: university email (instant), GitHub, or admin review | Verify: CIPC / NPO number + admin review | Accounts tab: everyone who signed up, filter "Not verified" / "Email not confirmed"; confirm an email whose confirmation never arrived; verify an account directly |
+| | | Team tab: invite admins by email, cancel invites, remove admins |
 | Pick best projects from GitHub; upload a demo video (MP4/WebM/MOV, 50 MB) or link one | Discover by category, search-as-you-type | Admin banner: requests waiting, admins, open invites |
 | Show/hide each project; edit/delete (videos are deleted with it) | Watch demos (pop up and play), view student profiles | |
 | Talent profile (edit/delete) | AI project analysis & AI recommendations | |
@@ -106,6 +107,10 @@ themselves, and never the last admin; the last admin also can't delete their own
 Admins see the **Verifications** tab to approve SMMEs/NGOs, developers and students who don't have a
 university email. Check CIPC numbers on bizportal.gov.za, NPO numbers on the DSD NPO register and
 GitHub profiles before approving; a rejection needs a reason, which the person sees.
+
+**Accounts** lists everyone, including people who never sent a verification request. Use **Confirm
+email** when someone's confirmation email didn't arrive (they can then sign in), and **Verify** to
+approve an account directly using the details it registered with.
 
 ### 5. POPIA checklist (organisation, not code)
 - Register your Information Officer with the Information Regulator and set `NEXT_PUBLIC_PRIVACY_CONTACT`.

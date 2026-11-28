@@ -43,6 +43,7 @@ import AiAnalysisPanel from "./AiAnalysisPanel";
 import VerificationCenter, { VerifiedBadge } from "./VerificationCenter";
 import AdminVerifications from "./AdminVerifications";
 import AdminTeam from "./AdminTeam";
+import AdminAccounts from "./AdminAccounts";
 import { ConsentGate, PrivacyCenter, PrivacyNotice } from "./Privacy";
 import { AccountDetailsFields, AccountDetailsGate } from "./AccountDetails";
 import {
@@ -507,6 +508,12 @@ export default function GeekArchiveApp() {
   // Admin team (Team tab). Demo mode keeps it in the page, starting with the built-in demo admin.
   const [adminTeam, setAdminTeam] = useState({ admins: [], invites: [] });
   const [adminTeamLoading, setAdminTeamLoading] = useState(false);
+  // Admin: every account (Accounts tab).
+  const [adminAccounts, setAdminAccounts] = useState([]);
+  const [adminAccountsLoading, setAdminAccountsLoading] = useState(false);
+  // With Supabase: whose verification status has been loaded (so a verified user never
+  // sees a flash of "Verify your account" while it loads).
+  const [verificationCheckedFor, setVerificationCheckedFor] = useState(null);
   const [demoTeam, setDemoTeam] = useState(() => ({
     admins: [{ userId: "demo:admin", name: "Geek Archive Admin", email: DEMO_ADMIN_EMAIL, since: new Date().toISOString() }],
     invites: [],
@@ -537,6 +544,8 @@ export default function GeekArchiveApp() {
   const isAdmin = Boolean(user?.isAdmin);
   const myVerification = user?.id ? verifications[user.id] || null : null;
   const isVerified = isAdmin || myVerification?.status === "verified";
+  // Only claim someone isn't verified once their status has actually loaded.
+  const verificationKnown = !supabase || isAdmin || (Boolean(user?.id) && verificationCheckedFor === user.id);
   // With Supabase, row-level security only returns verified students' work, so every
   // loaded row is from a verified owner. In demo mode we check the local records.
   const isOwnerVerified = (ownerId) => (supabase ? true : verifications[ownerId]?.status === "verified");
@@ -553,6 +562,7 @@ export default function GeekArchiveApp() {
   const navTabs = isAdmin
     ? [
         { id: "verifications", label: "Verifications" },
+        { id: "accounts", label: "Accounts" },
         { id: "team", label: "Team" },
         { id: "discover", label: "Discover projects" },
         { id: "archive", label: "Browse projects" },
@@ -803,6 +813,7 @@ export default function GeekArchiveApp() {
       }
       if (cancelled) return;
       if (data) setVerifications({ [signedInUserId]: fromVerificationRow(data) });
+      setVerificationCheckedFor(signedInUserId);
       if (user?.isAdmin) {
         const { data: rows } = await supabase.rpc("admin_list_verifications");
         if (!cancelled && rows) setAdminRequests(rows.map((row) => fromVerificationRow(row)));
@@ -1993,6 +2004,99 @@ export default function GeekArchiveApp() {
     });
   };
 
+  // --- Admin: all accounts -------------------------------------------------------------
+  const demoAccountList = () => {
+    const byId = new Map();
+    for (const [email, account] of Object.entries(demoAccounts)) {
+      byId.set(account.id, { userId: account.id, name: account.name, email });
+    }
+    for (const v of Object.values(verifications)) {
+      if (!byId.has(v.userId)) byId.set(v.userId, { userId: v.userId, name: v.userName, email: v.email });
+    }
+    return [...byId.values()].map((a) => {
+      const details = accountDetails[a.userId] || {};
+      const isOrg = ["smme", "ngo"].includes(details.accountType || verifications[a.userId]?.accountType);
+      return {
+        ...a,
+        role: demoTeam.admins.some((t) => t.userId === a.userId) ? "admin" : isOrg ? "organization" : "youth",
+        accountType: details.accountType || verifications[a.userId]?.accountType || "",
+        institution: details.institution || "",
+        organizationName: details.organizationName || "",
+        emailConfirmed: true, // demo mode has no email confirmation
+        status: verifications[a.userId]?.status || "unverified",
+        createdAt: null,
+      };
+    });
+  };
+
+  const loadAdminAccounts = async () => {
+    if (!isAdmin) return;
+    if (!supabase) {
+      setAdminAccounts(demoAccountList());
+      return;
+    }
+    setAdminAccountsLoading(true);
+    const { data, error } = await supabase.rpc("admin_list_accounts");
+    setAdminAccountsLoading(false);
+    if (error) throw error;
+    setAdminAccounts(
+      (data || []).map((r) => ({
+        userId: r.user_id,
+        name: r.display_name,
+        email: r.email,
+        role: r.role,
+        accountType: r.account_type || "",
+        institution: r.institution || "",
+        organizationName: r.organization_name || "",
+        emailConfirmed: Boolean(r.email_confirmed),
+        status: r.verification_status,
+        createdAt: r.created_at,
+      }))
+    );
+  };
+
+  const handleAdminConfirmEmail = async (userId) => {
+    if (!isAdmin) return;
+    if (supabase) {
+      const { error } = await supabase.rpc("admin_confirm_email", { p_user_id: userId });
+      if (error) throw error;
+    }
+    await loadAdminAccounts();
+  };
+
+  const handleAdminVerify = async (userId) => {
+    if (!isAdmin) return;
+    const now = new Date().toISOString();
+    if (supabase) {
+      const { error } = await supabase.rpc("admin_verify_account", { p_user_id: userId });
+      if (error) throw error;
+      // Keep the Verifications tab in step (the request, if any, is now decided).
+      setAdminRequests((current) =>
+        current.map((r) => (r.userId === userId ? { ...r, status: "verified", reviewedAt: now, reviewNote: "" } : r))
+      );
+      await loadAdminAccounts();
+      return;
+    }
+    const account = demoAccountList().find((a) => a.userId === userId);
+    setVerifications((current) => ({
+      ...current,
+      [userId]: {
+        userId,
+        userName: account?.name || current[userId]?.userName || "",
+        email: account?.email || current[userId]?.email || "",
+        accountType: current[userId]?.accountType || account?.accountType || (account?.role === "organization" ? "smme" : "student"),
+        method: "admin_review",
+        institution: account?.institution || current[userId]?.institution || "",
+        orgName: account?.organizationName || current[userId]?.orgName || "",
+        ...current[userId],
+        status: "verified",
+        submittedAt: current[userId]?.submittedAt || now,
+        reviewedAt: now,
+        reviewNote: "",
+      },
+    }));
+  };
+
   const handleAdminInvite = async (email) => {
     if (!isAdmin) return "invited";
     if (supabase) {
@@ -2194,6 +2298,10 @@ export default function GeekArchiveApp() {
       loadAdminTeam().catch(() => {});
     }
   }, [isAdmin, activeTab, demoTeam]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (isAdmin && activeTab === "accounts") loadAdminAccounts().catch(() => {});
+  }, [isAdmin, activeTab, verifications]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
 
@@ -2974,7 +3082,7 @@ export default function GeekArchiveApp() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
-        {user && !isVerified && (
+        {user && verificationKnown && !isVerified && (
           <div
             role="status"
             className={`mb-5 flex flex-col gap-3 rounded-2xl border px-5 py-4 sm:flex-row sm:items-center sm:justify-between ${
@@ -3081,7 +3189,7 @@ export default function GeekArchiveApp() {
               </dl>
               <p className="max-w-xl text-sm leading-relaxed text-[#D5DED2]">
                 {isAdmin
-                  ? "Review who joins: check university, GitHub, CIPC and NPO details before you approve. Invite other admins under Team."
+                  ? "Review who joins: check university, GitHub, CIPC and NPO details before you approve. Accounts lists everyone, including people who haven't asked to be verified. Invite other admins under Team."
                   : isYouth
                   ? "Create your talent profile, show your best projects, and join a project pod."
                   : "Describe your organization’s challenge, explore existing projects, and meet a pod built to help."}
@@ -3106,6 +3214,15 @@ export default function GeekArchiveApp() {
 
         {activeTab === "verifications" && isAdmin && (
           <AdminVerifications requests={adminRequestList} onReview={handleReviewVerification} />
+        )}
+
+        {activeTab === "accounts" && isAdmin && (
+          <AdminAccounts
+            accounts={adminAccounts}
+            loading={adminAccountsLoading}
+            onConfirmEmail={handleAdminConfirmEmail}
+            onVerify={handleAdminVerify}
+          />
         )}
 
         {activeTab === "team" && isAdmin && (
@@ -3389,6 +3506,8 @@ export default function GeekArchiveApp() {
                       {podRequest.status === "loading" ? "Sending…" : "Send offer"}
                     </button>
                     </>
+                  ) : !verificationKnown ? (
+                    <p role="status" className="mt-2 text-xs text-[#3E4F46]">Checking your verification…</p>
                   ) : (
                     <p className="mt-2 text-xs font-semibold text-[#6B5320]">Verify your organisation to request pods.</p>
                   )}
@@ -3401,7 +3520,7 @@ export default function GeekArchiveApp() {
           </div>
         )}
 
-        {activeTab === "discover" && !isYouth && !isVerified && (
+        {activeTab === "discover" && !isYouth && verificationKnown && !isVerified && (
           <VerifyGate
             title="Verify your organisation to discover student projects"
             text="To protect students, only verified SMMEs, NGOs and sponsors can see their projects and profiles, contact them, or run AI analyses."
@@ -3888,6 +4007,10 @@ export default function GeekArchiveApp() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
             {isVerified ? (
               projectForm
+            ) : !verificationKnown ? (
+              <p role="status" className="rounded-2xl border border-[#E6DFD5] bg-white p-5 text-sm text-[#6E5A4F] lg:col-span-5">
+                Checking your verification…
+              </p>
             ) : (
               <VerifyGate
                 className="lg:col-span-5"
@@ -4684,7 +4807,7 @@ export default function GeekArchiveApp() {
               <AiAnalysisPanel project={openProject} />
             </div>
           )}
-          {!isYouth && !isVerified && (
+          {!isYouth && verificationKnown && !isVerified && (
             <p className="mt-6 rounded-xl border border-[#E8D9B5] bg-[#FBF5E6] px-4 py-3 text-xs text-[#6B5320]">
               Verify your organisation to run an AI analysis of this project.
             </p>
