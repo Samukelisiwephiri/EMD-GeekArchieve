@@ -339,6 +339,21 @@ const MATCH_STOPWORDS = new Set(
   "and the for our are was were with that this from have has had but not you your they them their its can will would could should into about just than then when what which who how all any each some very also only own run need needs want help lose lot lots".split(" ")
 );
 
+// A pod's stage, worked out from the students' answers to their invitations.
+function podStageFor(pod) {
+  if (pod.signedOff) return "Delivered & Signed Off";
+  const statuses = pod.members.filter((m) => m.userId).map((m) => m.status || "accepted");
+  if (statuses.includes("accepted")) return "Students accepted: work in progress";
+  if (statuses.includes("invited")) return "Waiting for students to accept";
+  return "Looking for students";
+}
+
+const MEMBER_STATUS = {
+  invited: { label: "Invited · waiting for an answer", className: "bg-[#FBF6E6] text-[#6B5420] border-[#E8D9A8]" },
+  accepted: { label: "Accepted", className: "bg-[#EEF7E8] text-[#2F5A2F] border-[#B9DBA9]" },
+  declined: { label: "Declined", className: "bg-[#FBEDEA] text-[#8A2C1E] border-[#E7C3BC]" },
+};
+
 // Shown in place of features that need a verified account.
 function VerifyGate({ title, text, status, onVerify, className = "" }) {
   return (
@@ -524,6 +539,8 @@ export default function GeekArchiveApp() {
   // Uploaded demo video for the form: a storage path (Supabase) or a blob: URL (demo mode).
   const [newRepoVideoPath, setNewRepoVideoPath] = useState("");
   const [videoUploading, setVideoUploading] = useState(false);
+  const [respondingPodId, setRespondingPodId] = useState(null);
+  const [podInviteError, setPodInviteError] = useState("");
   const [newRepoCategory, setNewRepoCategory] = useState("");
   const [newRepoDescription, setNewRepoDescription] = useState("");
   const [newRepoStack, setNewRepoStack] = useState("");
@@ -543,9 +560,11 @@ export default function GeekArchiveApp() {
 
   // Pods this organisation requested / this student is assigned to.
   const orgPods = pods.filter((pod) => pod.orgId && pod.orgId === user?.id);
-  const myPods = pods.filter((pod) => pod.members.some((m) => m.userId && m.userId === user?.id));
-  const myActivePods = myPods.filter((pod) => !pod.signedOff);
-  const myRoleIn = (pod) => pod.members.find((m) => m.userId === user?.id);
+  const myRoleIn = (pod) => pod.members.find((m) => m.userId && m.userId === user?.id);
+  // Pods the student is invited to or accepted (a declined invitation disappears).
+  const myPods = pods.filter((pod) => myRoleIn(pod) && myRoleIn(pod).status !== "declined");
+  const myOpenPods = myPods.filter((pod) => !pod.signedOff);
+  const myActivePods = myOpenPods.filter((pod) => myRoleIn(pod).status === "accepted");
 
   // Real accounts: when Supabase keys are set, restore the session and follow sign-in changes.
   useEffect(() => {
@@ -877,6 +896,9 @@ export default function GeekArchiveApp() {
     setConfirmDeleteId(null);
     closeContactForm();
     setMessagesError("");
+    // Pod messages belong to the person who was signed in.
+    setPodRequest({ status: "idle", message: "" });
+    setPodInviteError("");
     setAuthPassword("");
     setAuthMode("signin");
     setShowAuthLanding(true);
@@ -1560,7 +1582,7 @@ export default function GeekArchiveApp() {
     if (error || !podRows) return;
     const ids = podRows.map((p) => p.id);
     const { data: memberRows } = ids.length
-      ? await supabase.from("youth_pod_members").select("pod_id, user_id, role, task").in("pod_id", ids)
+      ? await supabase.from("youth_pod_members").select("pod_id, user_id, role, task, status").in("pod_id", ids)
       : { data: [] };
     const userIds = [...new Set((memberRows || []).map((m) => m.user_id))];
     const { data: nameRows } = userIds.length
@@ -1582,7 +1604,13 @@ export default function GeekArchiveApp() {
         createdAt: p.created_at,
         members: (memberRows || [])
           .filter((m) => m.pod_id === p.id)
-          .map((m) => ({ role: m.role, task: m.task, userId: m.user_id, name: names.get(m.user_id) || null })),
+          .map((m) => ({
+            role: m.role,
+            task: m.task,
+            userId: m.user_id,
+            name: names.get(m.user_id) || null,
+            status: m.status || "accepted",
+          })),
       }))
     );
   };
@@ -1611,7 +1639,7 @@ export default function GeekArchiveApp() {
           prototypeId: project.id,
           projectTitle: project.title,
           need: problemBrief.trim(),
-          stage: "Pod matching in progress",
+          stage: "Waiting for students to accept",
           progress: 0,
           signedOff: false,
           signedOffAt: null,
@@ -1621,16 +1649,45 @@ export default function GeekArchiveApp() {
             task: m.task,
             userId: m.profile?.userId || null,
             name: m.profile?.name || null,
+            status: m.profile?.userId ? "invited" : null,
           })),
         },
         ...prev,
       ]);
     }
-    setPodRequest({ status: "done", message: `Pod requested for ${project.title}. The assigned students can now see it.` });
+    setPodRequest({
+      status: "done",
+      message: `Pod requested for ${project.title}. The matched students have been invited and will accept or decline.`,
+    });
     setActiveTab("pods");
   };
 
+  const handlePodInviteResponse = async (pod, accept) => {
+    const me = myRoleIn(pod);
+    if (!isYouth || !me || me.status !== "invited" || pod.signedOff || respondingPodId) return;
+    setPodInviteError("");
+    const status = accept ? "accepted" : "declined";
+    if (supabase) {
+      setRespondingPodId(pod.id);
+      const { error } = await supabase.rpc("respond_to_pod_invite", { p_pod_id: pod.id, p_accept: accept });
+      setRespondingPodId(null);
+      if (error) {
+        setPodInviteError(error.message || "Could not save your answer. Please try again.");
+        return;
+      }
+    }
+    setPods((prev) =>
+      prev.map((p) => {
+        if (p.id !== pod.id) return p;
+        const members = p.members.map((m) => (m.userId === user.id ? { ...m, status } : m));
+        return { ...p, members, stage: podStageFor({ ...p, members }) };
+      })
+    );
+  };
+
   const handleStakeholderSignOff = async (podId) => {
+    const pod = pods.find((p) => p.id === podId);
+    if (!pod || pod.signedOff || !pod.members.some((m) => m.status === "accepted")) return;
     if (supabase) {
       const { error } = await supabase.rpc("sign_off_youth_pod", { p_pod_id: podId });
       if (error) {
@@ -1820,6 +1877,46 @@ export default function GeekArchiveApp() {
       });
     }
     await handleSignOut();
+  };
+
+  // Accept / Decline for an invitation, or the student's answer once given.
+  const renderInviteAnswer = (pod) => {
+    const me = myRoleIn(pod);
+    if (!me) return null;
+    if (me.status === "invited") {
+      const busy = respondingPodId === pod.id;
+      return (
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#E6DFD5] pt-3">
+          <p className="mr-auto text-xs text-[#6E5A4F]">{pod.orgName} is waiting for your answer.</p>
+          <button
+            type="button"
+            onClick={() => handlePodInviteResponse(pod, true)}
+            disabled={busy}
+            aria-label={`Accept the pod for ${pod.projectTitle}`}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#5E7A5E] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#4C654C] disabled:opacity-70"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            {busy ? "Saving…" : "Accept"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handlePodInviteResponse(pod, false)}
+            disabled={busy}
+            aria-label={`Decline the pod for ${pod.projectTitle}`}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-[#D8CFC4] bg-white px-3.5 py-2 text-xs font-semibold text-[#3B2314] hover:bg-[#FAF8F5] disabled:opacity-70"
+          >
+            <X className="h-3.5 w-3.5" />
+            Decline
+          </button>
+        </div>
+      );
+    }
+    return (
+      <p className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-[#B9DBA9] bg-[#EEF7E8] px-3 py-1 text-xs font-semibold text-[#2F5A2F]">
+        <CheckCircle2 className="h-3.5 w-3.5" />
+        You accepted. You&apos;re working with {pod.orgName}.
+      </p>
+    );
   };
 
   const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
@@ -2671,17 +2768,25 @@ export default function GeekArchiveApp() {
             <div className="mb-5">
               <p className="text-xs font-semibold uppercase tracking-wide text-[#5E7A5E]">Youth dashboard</p>
               <h2 className="mt-1 text-xl font-bold text-[#2C1A10]">Matched opportunities</h2>
-              <p className="mt-1 text-sm text-[#6E5A4F]">Organisations that requested a pod with you in it.</p>
+              <p className="mt-1 text-sm text-[#6E5A4F]">
+                Organisations that want you in a pod. Accept to start working together, or decline.
+              </p>
             </div>
-            {myActivePods.length ? (
+            {podInviteError && (
+              <p role="alert" className="mb-3 rounded-xl border border-[#E7C3BC] bg-[#FBEDEA] px-4 py-2.5 text-sm text-[#8A2C1E]">
+                {podInviteError}
+              </p>
+            )}
+            {myOpenPods.length ? (
               <div className="space-y-3">
-                {myActivePods.map((pod) => (
+                {myOpenPods.map((pod) => (
                   <article key={pod.id} aria-label={`Opportunity: ${pod.projectTitle} for ${pod.orgName}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
                     <p className="text-xs font-semibold text-[#5E7A5E]">{pod.orgName}</p>
                     <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
                     {pod.need && <p className="mt-2 text-sm leading-relaxed text-[#5C493E]">“{pod.need}”</p>}
                     <p className="mt-3 text-xs text-[#6E5A4F]">Your pod role: <strong>{myRoleIn(pod)?.role}</strong></p>
                     <p className="mt-1 text-sm text-[#3B2314]">{myRoleIn(pod)?.task}</p>
+                    {renderInviteAnswer(pod)}
                   </article>
                 ))}
               </div>
@@ -3964,7 +4069,7 @@ export default function GeekArchiveApp() {
                 <article key={pod.id} aria-label={`Pod: ${pod.projectTitle}`} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] p-5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="font-bold text-[#2C1A10]">{pod.projectTitle}</h3>
-                    <span className="text-xs font-semibold text-[#5E7A5E]">{pod.stage}</span>
+                    <span className="text-xs font-semibold text-[#5E7A5E]">{podStageFor(pod)}</span>
                   </div>
                   <p className="text-xs text-[#6E5A4F]">For {pod.orgName}</p>
                   <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#EFEAE4]">
@@ -3974,6 +4079,7 @@ export default function GeekArchiveApp() {
                     <p className="text-xs font-bold text-[#2C1A10]">{myRoleIn(pod)?.role} · You</p>
                     <p className="mt-1 text-xs text-[#5C493E]">{myRoleIn(pod)?.task}</p>
                   </div>
+                  {!pod.signedOff && renderInviteAnswer(pod)}
                 </article>
               ))
             ) : (
@@ -4010,7 +4116,7 @@ export default function GeekArchiveApp() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#5E7A5E]">
                           <Users className="h-4 w-4" />
-                          <span>{pod.stage}</span>
+                          <span>{podStageFor(pod)}</span>
                         </span>
                         <span className="text-xs font-bold text-[#3B2314]">{pod.progress}%</span>
                       </div>
@@ -4022,8 +4128,19 @@ export default function GeekArchiveApp() {
                       <div className="mt-4 space-y-2">
                         {pod.members.map((m) => (
                           <div key={m.role} className="rounded-xl border border-[#E6DFD5] bg-[#FAF8F5] px-3.5 py-2.5 text-xs">
-                            <span className="font-bold text-[#2C1A10]">{m.role}:</span>{" "}
-                            <span className="font-medium text-[#3B2314]">{m.name || "Looking for a verified student"}</span>
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <span>
+                                <span className="font-bold text-[#2C1A10]">{m.role}:</span>{" "}
+                                <span className="font-medium text-[#3B2314]">{m.name || "Looking for a verified student"}</span>
+                              </span>
+                              {m.userId && MEMBER_STATUS[m.status || "accepted"] && (
+                                <span
+                                  className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${MEMBER_STATUS[m.status || "accepted"].className}`}
+                                >
+                                  {MEMBER_STATUS[m.status || "accepted"].label}
+                                </span>
+                              )}
+                            </div>
                             <p className="text-[#6E5A4F]">{m.task}</p>
                           </div>
                         ))}
@@ -4032,14 +4149,20 @@ export default function GeekArchiveApp() {
                     <div className="mt-5 flex items-center justify-between border-t border-[#E6DFD5] pt-4">
                       <span className="inline-flex items-center gap-1 text-xs text-[#5C493E]">
                         <ShieldCheck className="h-4 w-4 text-[#5E7A5E]" />
-                        <span>Sign off once the pod has delivered the work</span>
+                        <span>
+                          {pod.signedOff || pod.members.some((m) => m.status === "accepted")
+                            ? "Sign off once the pod has delivered the work"
+                            : "Sign-off opens once a student accepts"}
+                        </span>
                       </span>
                       <button
                         type="button"
                         onClick={() => handleStakeholderSignOff(pod.id)}
-                        disabled={pod.signedOff}
+                        disabled={pod.signedOff || !pod.members.some((m) => m.status === "accepted")}
                         className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
-                          pod.signedOff ? "cursor-default bg-[#EEF4EE] text-[#3F5D3F]" : "bg-[#3B2314] text-white hover:bg-[#2C1A10]"
+                          pod.signedOff
+                            ? "cursor-default bg-[#EEF4EE] text-[#3F5D3F]"
+                            : "bg-[#3B2314] text-white hover:bg-[#2C1A10] disabled:cursor-not-allowed disabled:bg-[#D8CFC4] disabled:text-[#6E5A4F]"
                         }`}
                       >
                         <CheckCircle2 className="h-3.5 w-3.5" />

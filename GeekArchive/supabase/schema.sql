@@ -127,6 +127,14 @@ create table if not exists public.youth_pod_members (
 );
 
 create index if not exists youth_pod_members_user_idx on public.youth_pod_members(user_id);
+-- Students are invited to a pod and accept or decline. Members added before invitations
+-- existed were never asked, so they start as accepted; new members start as invited.
+alter table public.youth_pod_members add column if not exists status text not null default 'accepted';
+alter table public.youth_pod_members alter column status set default 'invited';
+alter table public.youth_pod_members drop constraint if exists youth_pod_members_status_known;
+alter table public.youth_pod_members add constraint youth_pod_members_status_known
+  check (status in ('invited', 'accepted', 'declined'));
+alter table public.youth_pod_members add column if not exists responded_at timestamptz;
 
 -- POPIA: when each person agreed to the privacy notice, and which version.
 alter table public.profiles add column if not exists popia_consent_at timestamptz;
@@ -294,7 +302,7 @@ set search_path = public, auth, pg_temp
 as $$
   select exists (
     select 1 from public.youth_pod_members
-    where pod_id = p_pod_id and user_id = p_user_id
+    where pod_id = p_pod_id and user_id = p_user_id and status <> 'declined'
   );
 $$;
 
@@ -309,7 +317,7 @@ as $$
     select 1
     from public.youth_pod_members m
     join public.youth_pods p on p.id = m.pod_id
-    where p.prototype_id = p_prototype_id and m.user_id = p_user_id
+    where p.prototype_id = p_prototype_id and m.user_id = p_user_id and m.status <> 'declined'
   );
 $$;
 
@@ -324,7 +332,7 @@ as $$
     select 1
     from public.youth_pod_members m
     join public.youth_pods p on p.id = m.pod_id
-    where m.user_id = p_user_id and p.organization_id = p_organization_id
+    where m.user_id = p_user_id and p.organization_id = p_organization_id and m.status <> 'declined'
   );
 $$;
 
@@ -622,7 +630,7 @@ begin
     organization_uuid,
     p_prototype_id,
     brief_uuid,
-    'Pod matching in progress',
+    'Waiting for students to accept',
     (select display_name from public.profiles where id = organization_uuid),
     (select title from public.prototypes where id = p_prototype_id),
     left(trim(p_raw_brief), 1500)
@@ -656,8 +664,8 @@ begin
     limit 1;
 
     if candidate_uuid is not null then
-      insert into public.youth_pod_members (pod_id, user_id, role, task)
-      values (pod_uuid, candidate_uuid, role_task.role, role_task.task)
+      insert into public.youth_pod_members (pod_id, user_id, role, task, status)
+      values (pod_uuid, candidate_uuid, role_task.role, role_task.task, 'invited')
       on conflict (pod_id, role) do nothing;
     end if;
   end loop;
@@ -712,16 +720,61 @@ begin
     raise exception 'Only an SMME/NGO account can sign off a pod';
   end if;
 
+  if not exists (
+    select 1 from public.youth_pods where id = p_pod_id and organization_id = auth.uid()
+  ) then
+    raise exception 'Pod not found for this organization';
+  end if;
+  if not exists (
+    select 1 from public.youth_pod_members where pod_id = p_pod_id and status = 'accepted'
+  ) then
+    raise exception 'No student has accepted this pod yet, so there is nothing to sign off';
+  end if;
+
   update public.youth_pods
   set stakeholder_signed_off = true,
       signed_off_at = now(),
       progress_pct = 100,
       stage = 'Delivered & Signed Off'
   where id = p_pod_id and organization_id = auth.uid();
+end;
+$$;
 
-  if not found then
-    raise exception 'Pod not found for this organization';
+-- A student accepts or declines their invitation to a pod.
+create or replace function public.respond_to_pod_invite(p_pod_id uuid, p_accept boolean)
+returns text
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  new_status text := case when p_accept then 'accepted' else 'declined' end;
+  new_stage text;
+begin
+  if auth.uid() is null or public.get_current_profile_role() <> 'youth' then
+    raise exception 'Only a student can answer a pod invitation';
   end if;
+  if exists (select 1 from public.youth_pods where id = p_pod_id and stakeholder_signed_off) then
+    raise exception 'This pod is already signed off';
+  end if;
+
+  update public.youth_pod_members
+     set status = new_status, responded_at = now()
+   where pod_id = p_pod_id and user_id = auth.uid() and status = 'invited';
+  if not found then
+    raise exception 'You have no open invitation to this pod';
+  end if;
+
+  select case
+           when bool_or(status = 'accepted') then 'Students accepted: work in progress'
+           when bool_or(status = 'invited') then 'Waiting for students to accept'
+           else 'Looking for students'
+         end
+    into new_stage
+    from public.youth_pod_members
+   where pod_id = p_pod_id;
+  update public.youth_pods set stage = coalesce(new_stage, 'Looking for students') where id = p_pod_id;
+  return new_status;
 end;
 $$;
 
@@ -739,6 +792,7 @@ grant execute on function public.has_assigned_prototype(uuid, uuid) to authentic
 grant execute on function public.is_matched_talent(uuid, uuid) to authenticated;
 grant execute on function public.request_youth_pod(text, text, uuid) to authenticated;
 grant execute on function public.sign_off_youth_pod(uuid) to authenticated;
+grant execute on function public.respond_to_pod_invite(uuid, boolean) to authenticated;
 
 -- ---------------------------------------------------------------------------------
 -- Contact requests: an SMME/NGO messages the student who posted a project.
