@@ -7,6 +7,10 @@ recommendations for their need, contact students, and request a three-person pod
 UI/UX designer, business student) to finish and tailor the project, then sign off the
 delivered work.
 
+**Walkthrough:** a 23-step screenshot guide of the whole flow (sign-up, demo video, discovery,
+offers, accept/reject, sign-off) is in [`docs/walkthrough/index.html`](docs/walkthrough/index.html).
+Open the file in a browser after cloning; GitHub shows HTML files as source code.
+
 ## Features
 
 | For students & developers | For SMMEs, NGOs & sponsors | For admins |

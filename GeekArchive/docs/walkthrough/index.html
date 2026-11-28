@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Geek Archive Walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: a narrow reading column of numbered steps, each a screenshot beside its instructions; three parts follow the real order of the flow. Uses Geek Archive's own palette and typeface. */
+:root {
+  --bg: #F3F4EF;
+  --surface: #FFFFFF;
+  --ink: #1D2A22;
+  --muted: #5B6A60;
+  --line: #DCE2D7;
+  --forest: #163126;
+  --lime: #C8DD9F;
+  --lime-soft: #EEF4E2;
+  --amber: #8A6A1C;
+  --amber-soft: #FBF5E4;
+  --shot-edge: #D3DACE;
+  --font-body: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1813; --surface: #16221B; --ink: #E7EEE6; --muted: #A3B2A7; --line: #2A3A30;
+    --forest: #C8DD9F; --lime: #2E4A37; --lime-soft: #1C2C22; --amber: #E3C376; --amber-soft: #2A2416; --shot-edge: #33453A;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1813; --surface: #16221B; --ink: #E7EEE6; --muted: #A3B2A7; --line: #2A3A30;
+  --forest: #C8DD9F; --lime: #2E4A37; --lime-soft: #1C2C22; --amber: #E3C376; --amber-soft: #2A2416; --shot-edge: #33453A;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 40px 72px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 800; letter-spacing: -0.02em; color: var(--forest); }
+h2 { font-size: 24px; font-weight: 800; letter-spacing: -0.01em; }
+h3 { font-size: 18px; font-weight: 700; }
+p { margin: 0; }
+.eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.lede { max-width: 62ch; color: var(--muted); font-size: 17px; }
+header.top { display: grid; gap: 14px; margin-bottom: 28px; }
+
+.setup { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 36px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; min-width: 0; }
+.panel h3 { font-size: 15px; margin-bottom: 10px; }
+.panel ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); font-size: 14.5px; }
+.panel strong { color: var(--ink); }
+.accounts { width: 100%; border-collapse: collapse; font-size: 14px; }
+.accounts th { text-align: left; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 0 8px 6px 0; }
+.accounts td { padding: 7px 8px 7px 0; border-top: 1px solid var(--line); vertical-align: top; }
+code, .mono { font-family: var(--font-mono); font-size: 13px; background: var(--lime-soft); color: var(--forest); padding: 1px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+.table-scroll { overflow-x: auto; }
+.accounts .mono { overflow-wrap: normal; white-space: nowrap; }
+
+nav.parts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+nav.parts a { text-decoration: none; color: var(--forest); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; font-size: 14px; font-weight: 600; }
+nav.parts a:hover { border-color: var(--forest); }
+nav.parts a:focus-visible, .shot:focus-visible, button:focus-visible { outline: 3px solid var(--forest); outline-offset: 2px; }
+
+section.part { margin-top: 44px; display: grid; gap: 18px; }
+.part-head { display: grid; gap: 6px; padding-bottom: 12px; border-bottom: 2px solid var(--forest); }
+.part-head p { color: var(--muted); max-width: 64ch; }
+
+ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+.step.tall { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr); }
+.shot { display: block; border: 1px solid var(--shot-edge); border-radius: 10px; overflow: hidden; background: var(--bg); cursor: zoom-in; padding: 0; width: 100%; }
+.shot img { display: block; width: 100%; height: auto; }
+.step.tall .shot { max-width: 360px; justify-self: center; }
+.text { display: grid; gap: 10px; min-width: 0; }
+.num { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.num b { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--forest); color: var(--bg); font-size: 14px; }
+.who { font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 999px; background: var(--lime-soft); color: var(--forest); }
+.who.admin { background: var(--amber-soft); color: var(--amber); }
+.do { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 15px; }
+.see { font-size: 14.5px; color: var(--muted); }
+.see strong { color: var(--ink); font-weight: 600; }
+.note { font-size: 13.5px; background: var(--amber-soft); color: var(--amber); border-radius: 10px; padding: 8px 12px; }
+
+footer { margin-top: 56px; color: var(--muted); font-size: 14px; display: grid; gap: 6px; }
+
+dialog.zoom { border: 0; padding: 0; background: transparent; max-width: min(96vw, 1400px); max-height: 94vh; }
+dialog.zoom::backdrop { background: rgb(8 14 10 / 0.82); }
+dialog.zoom img { display: block; max-width: 100%; max-height: 88vh; border-radius: 10px; }
+dialog.zoom button { position: absolute; top: 8px; right: 8px; border: 0; border-radius: 999px; padding: 6px 14px; font: 600 14px var(--font-body); background: #FFFFFF; color: #163126; cursor: pointer; }
+
+@media (max-width: 760px) {
+  .setup { grid-template-columns: 1fr; }
+  .step, .step.tall { grid-template-columns: 1fr; padding: 14px; gap: 14px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .shot img { transition: transform 0.25s ease; }
+  .shot:hover img { transform: scale(1.01); }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <span class="eyebrow">Step-by-step guide · 23 steps</span>
+    <h1>Geek Archive walkthrough</h1>
+    <p class="lede">One full journey through the app: a student shows a project with a demo video, a spaza-shop owner finds it, sends an offer with a stipend, the student accepts, and the shop signs off the finished work. Every screenshot is from the real app.</p>
+  </header>
+
+  <div class="setup">
+    <div class="panel">
+      <h3>Before you start</h3>
+      <ul>
+        <li>Run the app with <code>npm run dev</code> in the <code>GeekArchive</code> folder and open <code>http://localhost:3000</code>.</li>
+        <li><strong>Demo mode</strong> (no Supabase keys): any password works and nothing is saved.</li>
+        <li><strong>Stay in one browser tab and don't reload.</strong> Demo data lives in the open page; a reload starts over.</li>
+        <li>For the video, any MP4, WebM or MOV up to 50&nbsp;MB.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Accounts used</h3>
+      <div class="table-scroll">
+        <table class="accounts">
+          <thead><tr><th>Who</th><th>Email</th><th>Joins as</th></tr></thead>
+          <tbody>
+            <tr><td>Thandi Mokoena, student</td><td><span class="mono">thandi@uj.ac.za</span></td><td>Youth Pod Talent</td></tr>
+            <tr><td>Bra Joe's Tuckshop</td><td><span class="mono">joe@tuckshop.co.za</span></td><td>SMME / NGO</td></tr>
+            <tr><td>Admin (built in)</td><td><span class="mono">admin@geekarchive.demo</span></td><td>SMME / NGO</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <nav class="parts" aria-label="Parts of the guide">
+    <a href="#student">1 · The student (steps 1–6)</a>
+    <a href="#smme">2 · The SMME and the admin (steps 7–13)</a>
+    <a href="#together">3 · Working together (steps 14–23)</a>
+  </nav>
+
+  <!-- ============ PART 1 ============ -->
+  <section class="part" id="student" aria-labelledby="student-h">
+    <div class="part-head">
+      <span class="eyebrow">Part 1</span>
+      <h2 id="student-h">The student shows their work</h2>
+      <p>Thandi signs up, gets verified with her university email, and posts a project with a demo video.</p>
+    </div>
+    <ol class="steps">
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: landing page"><img src="img/01-landing.png" alt="Geek Archive landing page with the sign-in card" loading="lazy" width="1280" height="860"></button>
+        <div class="text">
+          <span class="num"><b>1</b> Open the site</span>
+          <p class="see">The landing page explains Geek Archive and holds the <strong>Sign In / Sign Up</strong> card. Scroll down for “What makes Geek Archive different” and “How it works”.</p>
+        </div>
+      </li>
+      <li class="step tall">
+        <button class="shot" type="button" aria-label="Enlarge: student sign-up form"><img src="img/02-student-signup.png" alt="Sign-up form filled in for a student" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>2</b> Sign up as a student <span class="who">Student</span></span>
+          <ol class="do">
+            <li>Click <strong>Sign Up</strong>, then <strong>Youth Pod Talent</strong>.</li>
+            <li>Fill in full name, mobile number, “I am a” (Student), university, email and the password twice.</li>
+            <li>Tick the privacy notice and click <strong>Create Account</strong>.</li>
+          </ol>
+          <p class="see">Every field is required. If something is missing or wrong, the reason shows right above the button.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: verify account"><img src="img/03-student-verify.png" alt="Verify your account dialog for a student" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>3</b> Get verified <span class="who">Student</span></span>
+          <ol class="do">
+            <li>Click <strong>Verify now</strong> in the banner.</li>
+            <li>The university is already filled in from sign-up. Click <strong>Verify with my university email</strong>.</li>
+          </ol>
+          <p class="see">A <code>.ac.za</code> email verifies instantly. Other emails go to an admin for review.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: talent profile"><img src="img/04-student-profile.png" alt="Saved talent profile" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>4</b> Save a talent profile <span class="who">Student</span></span>
+          <ol class="do">
+            <li>Open <strong>My profile</strong>.</li>
+            <li>Choose the pod role (Developer), add availability, skills and a portfolio link, then <strong>Save my profile</strong>.</li>
+          </ol>
+          <p class="see">The profile is how a student gets matched into pods. SMMEs can view it; contact details stay private.</p>
+        </div>
+      </li>
+      <li class="step tall">
+        <button class="shot" type="button" aria-label="Enlarge: post a project with video"><img src="img/05-student-upload-video.png" alt="Post a project form with an uploaded demo video preview" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>5</b> Post a project with a demo video <span class="who">Student</span></span>
+          <ol class="do">
+            <li>Open <strong>My projects</strong> and fill in the name, GitHub link, category and description.</li>
+            <li>Under <strong>Demo video (required)</strong>, click <strong>Upload demo video</strong> and choose the file.</li>
+            <li>Check the preview, then <strong>Post my project</strong>.</li>
+          </ol>
+          <p class="see">You can <strong>Replace</strong> or <strong>Remove</strong> the video before posting, or paste a YouTube, Vimeo or Loom link instead.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: posted project"><img src="img/06-student-project-posted.png" alt="Posted project card showing Shown to organisations" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>6</b> The project is live <span class="who">Student</span></span>
+          <p class="see">The card shows <strong>Shown to organisations</strong>, with Watch demo and GitHub repo buttons. Use the switch to hide it, or Edit and Delete.</p>
+          <p class="note">Projects without a demo video stay hidden from organisations and show an “Add demo video” prompt.</p>
+          <p class="see">Now click <strong>Sign Out</strong> (top right).</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ============ PART 2 ============ -->
+  <section class="part" id="smme" aria-labelledby="smme-h">
+    <div class="part-head">
+      <span class="eyebrow">Part 2</span>
+      <h2 id="smme-h">The SMME finds the student</h2>
+      <p>A spaza-shop owner signs up, an admin approves the business, and the shop discovers Thandi's project.</p>
+    </div>
+    <ol class="steps" start="7">
+      <li class="step tall">
+        <button class="shot" type="button" aria-label="Enlarge: SMME sign-up form"><img src="img/07-smme-signup.png" alt="Sign-up form filled in for an SMME" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>7</b> Sign up as an SMME <span class="who">SMME</span></span>
+          <ol class="do">
+            <li>Click <strong>Sign Up</strong>, then <strong>SMME / NGO</strong>.</li>
+            <li>Fill in the contact person's name, mobile number, organisation type, registered name and CIPC number (e.g. <code>2019/123456/07</code>), then email and password.</li>
+            <li>Tick the privacy notice and <strong>Create Account</strong>.</li>
+          </ol>
+          <p class="see">NGOs choose NGO / NPO and give their NPO number. The organisation's name is what students see.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: SMME verification"><img src="img/08-smme-verify.png" alt="Verify your account dialog pre-filled for an SMME" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>8</b> Ask to be verified <span class="who">SMME</span></span>
+          <ol class="do">
+            <li>Click <strong>Verify now</strong>. The name and CIPC number are already filled in.</li>
+            <li>Click <strong>Send for review</strong>, close the window and <strong>Sign Out</strong>.</li>
+          </ol>
+          <p class="see">Until an admin approves, the SMME can't see student projects or contact students.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: admin verification queue"><img src="img/09-admin-approve.png" alt="Admin verification requests with Approve and Reject" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>9</b> Approve the business <span class="who admin">Admin</span></span>
+          <ol class="do">
+            <li>Sign in as <span class="mono">admin@geekarchive.demo</span> (choose SMME / NGO) and agree to the privacy notice.</li>
+            <li>Under <strong>Verification requests</strong>, check the CIPC number and click <strong>Approve</strong>. Then sign out.</li>
+          </ol>
+          <p class="see">Rejecting asks for a reason, which the user sees.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: discover projects"><img src="img/10-smme-discover.png" alt="Discover projects with a video preview card" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>10</b> Discover projects <span class="who">SMME</span></span>
+          <ol class="do">
+            <li>Sign in again as <span class="mono">joe@tuckshop.co.za</span>.</li>
+            <li>Open <strong>Discover projects</strong>.</li>
+          </ol>
+          <p class="see">Search as you type, filter by skill or category, or describe a challenge to <strong>Let AI find the best project</strong>.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: video playing"><img src="img/11-smme-video-plays.png" alt="Project window with the demo video playing" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>11</b> Watch the demo <span class="who">SMME</span></span>
+          <p class="see">Click the video preview on the card. The project window opens and <strong>the video plays straight away</strong>, with the description, tech stack and GitHub link below.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: student profile"><img src="img/12-smme-student-profile.png" alt="Student profile window seen by the SMME" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>12</b> View the student's profile <span class="who">SMME</span></span>
+          <p class="see">Click <strong>View Thandi's profile</strong> to see her role, availability, skills and all her projects. Her phone number and email are never shown.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: contact the student"><img src="img/13-smme-contact.png" alt="Contact form on a project card" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>13</b> Send a message <span class="who">SMME</span></span>
+          <ol class="do">
+            <li>Close the window and click <strong>Contact Thandi Mokoena</strong> on the card.</li>
+            <li>Edit the pre-filled message and click <strong>Send message</strong>.</li>
+          </ol>
+          <p class="see">The card then shows “Message sent · waiting for the student to reply”.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ============ PART 3 ============ -->
+  <section class="part" id="together" aria-labelledby="together-h">
+    <div class="part-head">
+      <span class="eyebrow">Part 3</span>
+      <h2 id="together-h">Working together</h2>
+      <p>The shop sends an offer, Thandi accepts it, and the shop signs off the delivered work.</p>
+    </div>
+    <ol class="steps" start="14">
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: send an offer"><img src="img/14-smme-send-offer.png" alt="Suggested project and pod with offer and message fields" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>14</b> Send an offer <span class="who">SMME</span></span>
+          <ol class="do">
+            <li>Open <strong>Describe a need</strong>, describe the problem and click <strong>Find a project &amp; assemble a pod</strong>.</li>
+            <li>Geek Archive suggests Thandi's project and a 3-role pod.</li>
+            <li>Fill in <strong>What you're offering</strong> and a short message, then <strong>Send offer</strong>.</li>
+          </ol>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: offer waiting"><img src="img/15-smme-offer-waiting.png" alt="Pod workspace card waiting for the student's answer" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>15</b> Wait for an answer <span class="who">SMME</span></span>
+          <p class="see"><strong>Pod workspace</strong> shows the offer and each student as “Offer sent · waiting for an answer”. <strong>Approve sign-off</strong> stays greyed out until a student accepts. Sign out.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: student messages"><img src="img/16-student-messages.png" alt="Message from the SMME in the student's Messages tab" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>16</b> Read the message <span class="who">Student</span></span>
+          <ol class="do">
+            <li>Sign in as <span class="mono">thandi@uj.ac.za</span> and open <strong>Messages</strong>.</li>
+            <li>Click <strong>I'm interested</strong> (or <strong>Not now</strong>).</li>
+          </ol>
+          <p class="see">“I'm interested” shows a <strong>Reply by email</strong> button, and the SMME sees her answer.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: received offer"><img src="img/17-student-received-offer.png" alt="Received offers with the offer, the message, Accept and Reject" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>17</b> Read the offer <span class="who">Student</span></span>
+          <p class="see">Open <strong>Received offers</strong>. The offer shows who it's from, <strong>what they offer</strong>, their <strong>message</strong>, their need and Thandi's task, with <strong>Accept</strong> and <strong>Reject</strong>.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: offer accepted"><img src="img/18-student-accepted.png" alt="Offer card after accepting" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>18</b> Accept it <span class="who">Student</span></span>
+          <p class="see">Click <strong>Accept</strong>: “You accepted. You're working with Bra Joe's Tuckshop.”</p>
+          <p class="note"><strong>Reject</strong> removes the offer, and the SMME sees “Rejected”.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: my pods"><img src="img/19-student-my-pods.png" alt="My pod workspace with the accepted pod" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>19</b> See the pod <span class="who">Student</span></span>
+          <p class="see"><strong>My pods</strong> now shows the project, who it's for and Thandi's task. The header counts it as an active pod. Sign out.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: SMME sees acceptance"><img src="img/20-smme-accepted.png" alt="Pod card showing the student accepted" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>20</b> See the answer <span class="who">SMME</span></span>
+          <p class="see">Sign in as the shop and open <strong>Pod workspace</strong>. Thandi shows as <strong>Accepted</strong>, and the stage reads “Students accepted: work in progress”.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: signed off"><img src="img/21-smme-signed-off.png" alt="Pod card after sign-off" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>21</b> Sign off the work <span class="who">SMME</span></span>
+          <p class="see">When the work is delivered, click <strong>Approve sign-off</strong>. The pod moves to “Delivered &amp; Signed Off” at 100%.</p>
+        </div>
+      </li>
+      <li class="step">
+        <button class="shot" type="button" aria-label="Enlarge: privacy and my data"><img src="img/22-privacy.png" alt="Privacy and my data window" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>22</b> Privacy &amp; my data <span class="who">Anyone</span></span>
+          <p class="see">The lock icon (top right) opens the privacy notice, a summary of your data, <strong>Download my data</strong> and <strong>Delete my account</strong>, as POPIA requires.</p>
+        </div>
+      </li>
+      <li class="step tall">
+        <button class="shot" type="button" aria-label="Enlarge: phone view"><img src="img/23-phone-video.png" alt="The project video playing on a phone" loading="lazy"></button>
+        <div class="text">
+          <span class="num"><b>23</b> On a phone <span class="who">Anyone</span></span>
+          <p class="see">Everything works at phone width: the tabs move into a menu, and the project video fills the screen.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <footer>
+    <p><strong>Not covered here:</strong> the AI project analysis and AI recommendations need an Anthropic API key, and real accounts, saved data and video storage need Supabase keys plus the database script (<code>supabase/schema.sql</code>).</p>
+    <p>Screenshots taken from Geek Archive running locally in demo mode.</p>
+  </footer>
+</div>
+
+<dialog class="zoom" id="zoom" aria-label="Enlarged screenshot">
+  <img id="zoom-img" alt="">
+  <button type="button" id="zoom-close">Close</button>
+</dialog>
+
+<script>
+  const dlg = document.getElementById("zoom");
+  const big = document.getElementById("zoom-img");
+  document.querySelectorAll(".shot").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const img = btn.querySelector("img");
+      big.src = img.src;
+      big.alt = img.alt;
+      if (typeof dlg.showModal === "function") dlg.showModal();
+    });
+  });
+  document.getElementById("zoom-close").addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+</script>
+</html>
