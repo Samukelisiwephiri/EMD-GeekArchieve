@@ -42,6 +42,7 @@ import StudentProfile from "./StudentProfile";
 import AiAnalysisPanel from "./AiAnalysisPanel";
 import VerificationCenter, { VerifiedBadge } from "./VerificationCenter";
 import AdminVerifications from "./AdminVerifications";
+import AdminTeam from "./AdminTeam";
 import { ConsentGate, PrivacyCenter, PrivacyNotice } from "./Privacy";
 import { AccountDetailsFields, AccountDetailsGate } from "./AccountDetails";
 import {
@@ -501,6 +502,13 @@ export default function GeekArchiveApp() {
   const [accountDetails, setAccountDetails] = useState({});
   // Demo mode: accounts registered in this tab, by email, so signing in finds them again.
   const [demoAccounts, setDemoAccounts] = useState({});
+  // Admin team (Team tab). Demo mode keeps it in the page, starting with the built-in demo admin.
+  const [adminTeam, setAdminTeam] = useState({ admins: [], invites: [] });
+  const [adminTeamLoading, setAdminTeamLoading] = useState(false);
+  const [demoTeam, setDemoTeam] = useState(() => ({
+    admins: [{ userId: "demo:admin", name: "Geek Archive Admin", email: DEMO_ADMIN_EMAIL, since: new Date().toISOString() }],
+    invites: [],
+  }));
   // Google/GitHub sign-in buttons only appear when that method is switched on in Supabase
   // (Authentication -> Providers). Demo mode shows both.
   const [authProviders, setAuthProviders] = useState(() => (supabase ? { google: false, github: false } : { google: true, github: true }));
@@ -543,6 +551,7 @@ export default function GeekArchiveApp() {
   const navTabs = isAdmin
     ? [
         { id: "verifications", label: "Verifications" },
+        { id: "team", label: "Team" },
         { id: "discover", label: "Discover projects" },
         { id: "archive", label: "Browse projects" },
       ]
@@ -892,7 +901,10 @@ export default function GeekArchiveApp() {
       : nameFromEmail(authEmail) || "Tshepo Molefe";
 
     const emailKey = authEmail.trim().toLowerCase();
-    const demoAdmin = !isOAuth && emailKey === DEMO_ADMIN_EMAIL;
+    const builtInDemoAdmin = !isOAuth && emailKey === DEMO_ADMIN_EMAIL;
+    const teamAdmin = !isOAuth && demoTeam.admins.find((a) => a.email === emailKey && a.userId !== "demo:admin");
+    const invitedAdmin = !isOAuth && demoTeam.invites.some((i) => i.email === emailKey);
+    const demoAdmin = builtInDemoAdmin;
     const registered = !isOAuth && !isEmailSignup ? demoAccounts[emailKey] : null;
     // If this demo user already saved a profile, keep the name they chose there.
     const demoId = demoAdmin
@@ -910,16 +922,24 @@ export default function GeekArchiveApp() {
     if (!isOAuth && authMode === "signup" && signupConsent) {
       setConsents((current) => ({ ...current, [demoId]: current[demoId] || new Date().toISOString() }));
     }
+    // Demo stand-in for the database's invite rule: an invited email becomes an admin on sign-in.
+    const becomesAdmin = demoAdmin || Boolean(teamAdmin) || invitedAdmin;
+    if (invitedAdmin) {
+      setDemoTeam((current) => ({
+        admins: [...current.admins, { userId: demoId, name: displayName, email: emailKey, since: new Date().toISOString() }],
+        invites: current.invites.filter((i) => i.email !== emailKey),
+      }));
+    }
     setUser({
       id: demoId,
       email: isOAuth ? "" : authEmail.trim(),
       name: displayName,
-      role: demoAdmin ? "Admin" : authRole,
+      role: becomesAdmin ? "Admin" : authRole,
       provider: providerLabel,
-      isAdmin: demoAdmin,
+      isAdmin: becomesAdmin,
     });
     setNewTalent((current) => ({ ...current, name: displayName }));
-    setActiveTab(demoAdmin ? "verifications" : authRole === "Youth Pod Talent" ? "talent" : "match");
+    setActiveTab(becomesAdmin ? "verifications" : authRole === "Youth Pod Talent" ? "talent" : "match");
     setShowAuthLanding(false);
   };
 
@@ -1918,6 +1938,71 @@ export default function GeekArchiveApp() {
     }));
   };
 
+  // --- Admin team ---------------------------------------------------------------------
+  const loadAdminTeam = async () => {
+    if (!isAdmin) return;
+    if (!supabase) {
+      setAdminTeam(demoTeam);
+      return;
+    }
+    setAdminTeamLoading(true);
+    const { data, error } = await supabase.rpc("admin_list_team");
+    setAdminTeamLoading(false);
+    if (error) throw error;
+    setAdminTeam({
+      admins: (data || []).filter((r) => r.kind === "admin").map((r) => ({ userId: r.user_id, name: r.display_name, email: r.email, since: r.since })),
+      invites: (data || []).filter((r) => r.kind === "invite").map((r) => ({ email: r.email, since: r.since })),
+    });
+  };
+
+  const handleAdminInvite = async (email) => {
+    if (!isAdmin) return "invited";
+    if (supabase) {
+      const { data, error } = await supabase.rpc("admin_invite", { p_email: email });
+      if (error) throw error;
+      await loadAdminTeam();
+      return data;
+    }
+    if (demoTeam.admins.some((a) => a.email === email)) return "already";
+    const account = demoAccounts[email];
+    const next = account
+      ? { ...demoTeam, admins: [...demoTeam.admins, { userId: account.id, name: account.name, email, since: new Date().toISOString() }] }
+      : demoTeam.invites.some((i) => i.email === email)
+        ? demoTeam
+        : { ...demoTeam, invites: [...demoTeam.invites, { email, since: new Date().toISOString() }] };
+    setDemoTeam(next);
+    setAdminTeam(next);
+    return account ? "promoted" : "invited";
+  };
+
+  const handleAdminCancelInvite = async (email) => {
+    if (!isAdmin) return;
+    if (supabase) {
+      const { error } = await supabase.rpc("admin_cancel_invite", { p_email: email });
+      if (error) throw error;
+      await loadAdminTeam();
+      return;
+    }
+    const next = { ...demoTeam, invites: demoTeam.invites.filter((i) => i.email !== email) };
+    setDemoTeam(next);
+    setAdminTeam(next);
+  };
+
+  const handleAdminRemove = async (userId) => {
+    if (!isAdmin) return;
+    if (supabase) {
+      const { error } = await supabase.rpc("admin_remove", { p_user_id: userId });
+      if (error) throw error;
+      await loadAdminTeam();
+      return;
+    }
+    if (userId === user.id) throw new Error("You can't remove yourself. Ask another admin.");
+    if (demoTeam.admins.length <= 1) throw new Error("Geek Archive needs at least one admin");
+    const next = { ...demoTeam, admins: demoTeam.admins.filter((a) => a.userId !== userId) };
+    setDemoTeam(next);
+    setAdminTeam(next);
+  };
+
   const handleConsent = async () => {
     if (!user?.id) return;
     const now = new Date().toISOString();
@@ -1968,6 +2053,10 @@ export default function GeekArchiveApp() {
       const { error } = await supabase.rpc("delete_my_account");
       if (error) throw error;
     } else {
+      if (isAdmin && demoTeam.admins.length <= 1) {
+        throw new Error("You are the only admin. Add another admin under Team before deleting your account.");
+      }
+      if (isAdmin) setDemoTeam((current) => ({ ...current, admins: current.admins.filter((a) => a.userId !== id) }));
       prototypes.filter((p) => p.ownerId === id).forEach((p) => removeDemoVideo(p.demoVideoPath));
       setTalentProfiles((current) => current.filter((p) => p.userId !== id));
       setPrototypes((current) => current.filter((p) => p.ownerId !== id));
@@ -2061,6 +2150,12 @@ export default function GeekArchiveApp() {
     setUser((current) => (current ? { ...current, name } : current));
     setNewTalent((current) => ({ ...current, name: isYouth ? name : current.name }));
   };
+
+  useEffect(() => {
+    if (isAdmin && (activeTab === "team" || activeTab === "verifications")) {
+      loadAdminTeam().catch(() => {});
+    }
+  }, [isAdmin, activeTab, demoTeam]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openProject = openProjectId ? prototypes.find((p) => p.id === openProjectId) || null : null;
 
@@ -2853,7 +2948,9 @@ export default function GeekArchiveApp() {
                     : "Verify your account"}
                 </p>
                 <p className="text-xs text-[#3E4F46]">
-                  {myVerification?.status === "pending"
+                  {myVerification?.status === "rejected" && myVerification?.reviewNote
+                    ? `Reason: ${myVerification.reviewNote}. Update your details and send the request again.`
+                    : myVerification?.status === "pending"
                     ? "You can set things up meanwhile; full access opens once you're approved."
                     : isYouth
                     ? "Verified students and developers can post projects that organisations can discover."
@@ -2893,7 +2990,12 @@ export default function GeekArchiveApp() {
                 Work experience, redefined
               </p>
               <h1 className="text-3xl font-semibold leading-tight tracking-[-0.03em] sm:text-[40px]">
-                {isYouth ? (
+                {isAdmin ? (
+                  <>
+                    Keep Geek Archive
+                    <span className="text-[#C8DD9F]"> trustworthy.</span>
+                  </>
+                ) : isYouth ? (
                   <>
                     Build your skills.
                     <span className="text-[#C8DD9F]"> Show your impact.</span>
@@ -2906,7 +3008,13 @@ export default function GeekArchiveApp() {
                 )}
               </h1>
               <dl className="flex flex-wrap gap-2 pt-1" aria-label="Your Geek Archive at a glance">
-                {(isYouth
+                {(isAdmin
+                  ? [
+                      ["Waiting for review", adminRequestList.filter((r) => r.status === "pending").length],
+                      ["Admins", adminTeam.admins.length],
+                      ["Open invites", adminTeam.invites.length],
+                    ]
+                  : isYouth
                   ? [
                       ["Projects shown", myProjects.filter((p) => p.showcased !== false).length],
                       ["Active pods", myActivePods.length],
@@ -2924,7 +3032,9 @@ export default function GeekArchiveApp() {
                 ))}
               </dl>
               <p className="max-w-xl text-sm leading-relaxed text-[#D5DED2]">
-                {isYouth
+                {isAdmin
+                  ? "Review who joins: check university, GitHub, CIPC and NPO details before you approve. Invite other admins under Team."
+                  : isYouth
                   ? "Create your talent profile, show your best projects, and join a project pod."
                   : "Describe your organization’s challenge, explore existing projects, and meet a pod built to help."}
               </p>
@@ -2932,7 +3042,7 @@ export default function GeekArchiveApp() {
             <div className="flex shrink-0 gap-3">
               <button
                 type="button"
-                onClick={() => setActiveTab(isYouth ? "opportunities" : "archive")}
+                onClick={() => setActiveTab(isAdmin ? "verifications" : isYouth ? "opportunities" : "archive")}
                 className="relative inline-flex items-center gap-2 rounded-full bg-[#C8DD9F] px-5 py-3 text-xs font-bold text-[#163126] shadow-[0_12px_30px_rgba(200,221,159,0.12)] hover:bg-[#D5E7B5]"
               >
                 {isYouth ? (
@@ -2940,7 +3050,7 @@ export default function GeekArchiveApp() {
                 ) : (
                   <Layers className="h-4 w-4 text-[#5E7A5E]" />
                 )}
-                <span>{isYouth ? "My offers" : "Browse projects"}</span>
+                <span>{isAdmin ? "Review requests" : isYouth ? "My offers" : "Browse projects"}</span>
               </button>
             </div>
           </div>
@@ -2948,6 +3058,17 @@ export default function GeekArchiveApp() {
 
         {activeTab === "verifications" && isAdmin && (
           <AdminVerifications requests={adminRequestList} onReview={handleReviewVerification} />
+        )}
+
+        {activeTab === "team" && isAdmin && (
+          <AdminTeam
+            team={adminTeam}
+            currentUserId={user?.id}
+            loading={adminTeamLoading}
+            onInvite={handleAdminInvite}
+            onCancelInvite={handleAdminCancelInvite}
+            onRemove={handleAdminRemove}
+          />
         )}
 
         {activeTab === "opportunities" && isYouth && (
@@ -4553,6 +4674,11 @@ export default function GeekArchiveApp() {
             summary={privacySummary}
             buildExport={buildMyDataExport}
             onDeleteAccount={handleDeleteAccount}
+            deleteBlockedReason={
+              isAdmin && adminTeam.admins.length <= 1
+                ? "You're the only admin, so you can't delete your account yet. Invite another admin under Team first, so someone can still review verification requests."
+                : ""
+            }
           />
         </Modal>
       )}

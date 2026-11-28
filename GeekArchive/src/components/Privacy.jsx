@@ -92,7 +92,7 @@ export function ConsentGate({ open, userName, onAgree, onSignOut }) {
 }
 
 /** "Privacy & my data": the notice, a data summary, download, and account deletion. */
-export function PrivacyCenter({ user, consentAt, summary, buildExport, onDeleteAccount }) {
+export function PrivacyCenter({ user, consentAt, summary, buildExport, onDeleteAccount, deleteBlockedReason = "" }) {
   const [confirmText, setConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
@@ -158,6 +158,12 @@ export function PrivacyCenter({ user, consentAt, summary, buildExport, onDeleteA
           This permanently deletes your account, {user.isYouth ? "talent profile, projects, " : ""}messages and
           verification record. It can&apos;t be undone.
         </p>
+        {deleteBlockedReason ? (
+          <p role="note" className="mt-3 rounded-lg border border-[#E8D9A8] bg-[#FBF6E6] px-3 py-2 text-xs text-[#6B5420]">
+            {deleteBlockedReason}
+          </p>
+        ) : (
+        <>
         <label htmlFor="delete-confirm" className="mt-3 block text-xs font-semibold text-[#5C2A20]">
           Type <strong>DELETE</strong> to confirm
         </label>
@@ -168,6 +174,8 @@ export function PrivacyCenter({ user, consentAt, summary, buildExport, onDeleteA
           </button>
         </div>
         {error && <p role="alert" className="mt-2 text-xs text-[#8A2C1E]">{error}</p>}
+        </>
+        )}
       </section>
     </div>
   );

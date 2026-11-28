@@ -1,11 +1,13 @@
 # Geek Archive (by Embedded Intelligence)
 
 Geek Archive connects South African SMMEs, NGOs and sponsors with verified students and developers.
-Students showcase the GitHub projects they're most confident in; organisations discover them by
-category, watch demo videos, get a plain-language AI analysis of each project, receive AI
-recommendations for their need, contact students, and request a three-person pod (developer,
-UI/UX designer, business student) to finish and tailor the project, then sign off the
-delivered work.
+Students showcase the GitHub projects they're most confident in, each with a demo video; organisations
+discover them by category, watch the demos, get a plain-language AI analysis of each project, receive
+AI recommendations for their need, contact students, and send an offer (with a short message) to a
+three-person pod (developer, UI/UX designer, business student). Students accept or reject the offer;
+once the work is delivered, the organisation signs it off.
+
+**Live:** [geek-archive.vercel.app](https://geek-archive.vercel.app) (Vercel + Supabase).
 
 **Walkthrough:** a 23-step screenshot guide of the whole flow (sign-up, demo video, discovery,
 offers, accept/reject, sign-off) is in [`docs/walkthrough/index.html`](docs/walkthrough/index.html).
@@ -15,15 +17,18 @@ Open the file in a browser after cloning; GitHub shows HTML files as source code
 
 | For students & developers | For SMMEs, NGOs & sponsors | For admins |
 |---|---|---|
-| Verify (university email, GitHub, or review) | Verify (CIPC / NPO number + review) | Review verification requests |
-| Pick best projects from GitHub; demo videos; categories | Discover by category, search-as-you-type | |
-| Show/hide each project; edit/delete | Watch demos (autoplay), view student profiles | |
+| Sign up with full details (name, SA mobile, student/developer/IT, institution) | Sign up with full details (contact person, SA mobile, organisation name, SMME/NGO, CIPC/NPO number) | Review verification requests (approve, or reject with a reason the person sees) |
+| Verify: university email (instant), GitHub, or admin review | Verify: CIPC / NPO number + admin review | Team tab: invite admins by email, cancel invites, remove admins |
+| Pick best projects from GitHub; upload a demo video (MP4/WebM/MOV, 50 MB) or link one | Discover by category, search-as-you-type | Admin banner: requests waiting, admins, open invites |
+| Show/hide each project; edit/delete (videos are deleted with it) | Watch demos (pop up and play), view student profiles | |
 | Talent profile (edit/delete) | AI project analysis & AI recommendations | |
-| Messages from organisations; reply by email | Contact students (privacy-preserving) | |
-| Pods and matched opportunities | Request pods, sign off delivered work | |
+| Messages from organisations; reply by email or "Not now" | Contact students (privacy-preserving) | |
+| **Received offers**: see what's offered and the message, then Accept or Reject; My pods | Send an offer with a message; see each student's answer; sign off once someone accepted | |
 
 Privacy (POPIA): consent at sign-up, privacy notice, "Privacy & my data" (download / delete account),
-no ID numbers or documents collected, students' contact details never shown to organisations.
+no ID numbers or documents collected. Phone numbers and registration details are private (the person
+and admins only); students' contact details are never shown to organisations. Google/GitHub sign-up
+users and older accounts are asked for the required details after sign-in.
 
 ## Architecture
 
@@ -41,6 +46,10 @@ no ID numbers or documents collected, students' contact details never shown to o
 | `GET /api/github-repos` | Signed-in, verified students/developers |
 | `POST /api/verify-github` | Signed-in users (demo-mode GitHub check) |
 
+Google/GitHub sign-in buttons only appear for the methods switched on in Supabase (the app reads
+Supabase's public auth settings). If GitHub sign-in is off, developers verify through admin review
+with their GitHub username instead of "Connect GitHub".
+
 ## Going live
 
 ### 1. Supabase
@@ -50,7 +59,10 @@ no ID numbers or documents collected, students' contact details never shown to o
 3. **Authentication → URL Configuration**: set *Site URL* to your domain (e.g. `https://geekarchive.co.za`)
    and add it to *Redirect URLs* (password-reset and OAuth links return here).
 4. **Authentication → Sign In / Providers**:
-   - Email: keep **Confirm email** on (students are only auto-verified once their `.ac.za` email is confirmed).
+   - Email: keep **Confirm email** on (students are only auto-verified once their `.ac.za` email is
+     confirmed, and admin invites only take effect for a confirmed address).
+   - **Emails → SMTP**: add your own email provider (e.g. Resend). Supabase's built-in sender is heavily
+     rate-limited and may only deliver to your own team, so real users wouldn't get confirmation emails.
    - Enable **GitHub** (needed for developer verification) and optionally **Google**.
    - Enable **Manual linking** (developers connect GitHub to an existing account to get verified).
 5. **Project Settings → API**: copy the *Project URL* and *anon public* key. Never use the
@@ -73,17 +85,27 @@ routes return `503`, so a misconfigured deployment can't hand out fake sign-ins 
 
 ### 3. Deploy (Vercel)
 1. Import the GitHub repo in [vercel.com](https://vercel.com); set **Root Directory** to `GeekArchive`.
-2. Add the environment variables above, then deploy.
-3. Add your custom domain, and use it in Supabase's Site URL / Redirect URLs.
+   (Or from this folder: `vercel link`, then `vercel deploy --prod`.)
+2. Easiest database setup: in the Vercel project open **Storage → Supabase**. Vercel creates the
+   Supabase project and adds `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` for you.
+   Otherwise add the environment variables above yourself.
+3. Run `supabase/schema.sql` on the database (SQL Editor), then redeploy so the build picks up the keys.
+4. Add your custom domain, and use it in Supabase's Site URL / Redirect URLs.
 
-### 4. Create the first admin
-Sign up normally, confirm your email, then in the Supabase SQL Editor run:
+### 4. Admins
+**First admin:** sign up normally, confirm your email, then in the Supabase SQL Editor run:
 ```sql
 update public.profiles set role = 'admin'
 where id = (select id from auth.users where email = 'you@yourdomain.co.za');
 ```
-Admins see the **Verifications** tab to approve SMMEs/NGOs and students who don't have a university
-email. Check CIPC numbers on bizportal.gov.za and NPO numbers on the DSD NPO register before approving.
+**More admins:** in the app, open **Team** and invite them by email. Someone who already has a
+confirmed account becomes an admin straight away; anyone else becomes one automatically when they
+sign up and confirm that email address. Admins can cancel invites and remove other admins (not
+themselves, and never the last admin; the last admin also can't delete their own account).
+
+Admins see the **Verifications** tab to approve SMMEs/NGOs, developers and students who don't have a
+university email. Check CIPC numbers on bizportal.gov.za, NPO numbers on the DSD NPO register and
+GitHub profiles before approving; a rejection needs a reason, which the person sees.
 
 ### 5. POPIA checklist (organisation, not code)
 - Register your Information Officer with the Information Regulator and set `NEXT_PUBLIC_PRIVACY_CONTACT`.
@@ -110,6 +132,8 @@ npm run build && npm start
 - `src/app/page.jsx` — entry; shows a setup screen if a production build isn't connected to Supabase
 - `src/app/api/*` — server routes (AI analysis, AI recommendations, GitHub repos, GitHub verification)
 - `src/components/GeekArchiveApp.jsx` — dashboards and main flows
-- `src/components/*` — project links/video, profiles, AI panels, verification, privacy, admin queue
-- `src/lib/*` — Supabase client, API auth, media/GitHub helpers, categories, verification rules
+- `src/components/*` — project links/video, profiles, AI panels, verification, privacy, sign-up details,
+  admin queue (`AdminVerifications.jsx`) and admin team (`AdminTeam.jsx`)
+- `src/lib/*` — Supabase client, API auth, media/GitHub helpers, categories, verification rules,
+  sign-up details (`accountDetails.js`), uploaded demo videos (`demoVideos.js`)
 - `supabase/schema.sql` — tables, triggers, functions and row-level security

@@ -1122,6 +1122,10 @@ begin
   if caller is null then
     raise exception 'Not signed in';
   end if;
+  if public.get_current_profile_role() = 'admin'
+     and (select count(*) from public.profiles where role = 'admin') <= 1 then
+    raise exception 'You are the only admin. Add another admin under Team before deleting your account.';
+  end if;
   delete from public.prototypes where created_by = caller;
   delete from auth.users where id = caller;
 end;
@@ -1286,3 +1290,150 @@ begin
 end;
 $$;
 grant execute on function public.save_account_details(text, text, text, text, text, text) to authenticated;
+
+-- ---------------------------------------------------------------------------------
+-- Admin team. Admins invite people by email (Team tab). Someone with a confirmed
+-- account becomes an admin at once; anyone else becomes one automatically when they
+-- sign up and confirm that email address (keep "Confirm email" on in Supabase Auth,
+-- or an invite could be claimed by whoever signs up with the address first).
+-- The first admin is created by hand (see the README).
+-- ---------------------------------------------------------------------------------
+create table if not exists public.admin_invites (
+  email text primary key check (email = lower(email) and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'),
+  invited_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+alter table public.admin_invites enable row level security;
+revoke all on public.admin_invites from anon, authenticated;
+-- No policies on purpose: only the security-definer functions below touch this table.
+
+-- Runs after the profile is created (trigger names fire in alphabetical order).
+create or replace function public.apply_admin_invite()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if new.email_confirmed_at is not null and new.email is not null
+     and exists (select 1 from public.admin_invites i where i.email = lower(new.email)) then
+    update public.profiles set role = 'admin' where id = new.id;
+    delete from public.admin_invites where email = lower(new.email);
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists on_auth_user_created_then_admin_invite on auth.users;
+create trigger on_auth_user_created_then_admin_invite
+  after insert or update of email_confirmed_at on auth.users
+  for each row execute procedure public.apply_admin_invite();
+
+-- Admin: everyone on the team, plus open invites.
+create or replace function public.admin_list_team()
+returns table (kind text, user_id uuid, display_name text, email text, since timestamptz)
+language plpgsql
+stable
+security definer
+set search_path = public, auth, pg_temp
+as $$
+#variable_conflict use_column
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can see the team';
+  end if;
+  return query
+    select 'admin'::text, p.id, p.display_name, u.email::text, p.created_at
+      from public.profiles p left join auth.users u on u.id = p.id
+     where p.role = 'admin'
+    union all
+    select 'invite'::text, null::uuid, null::text, i.email, i.created_at
+      from public.admin_invites i
+    order by 1, 5;
+end;
+$$;
+
+-- Admin: invite by email. Returns 'promoted' (existing confirmed account is now an
+-- admin), 'already' (already an admin) or 'invited' (becomes admin on confirmed sign-up).
+create or replace function public.admin_invite(p_email text)
+returns text
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+declare
+  e text := lower(trim(coalesce(p_email, '')));
+  target uuid;
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can invite admins';
+  end if;
+  if e !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' then
+    raise exception 'Enter a valid email address';
+  end if;
+  select u.id into target from auth.users u
+   where lower(u.email) = e and u.email_confirmed_at is not null
+   limit 1;
+  if target is not null then
+    if exists (select 1 from public.profiles where id = target and role = 'admin') then
+      return 'already';
+    end if;
+    update public.profiles set role = 'admin' where id = target;
+    delete from public.admin_invites where email = e;
+    return 'promoted';
+  end if;
+  insert into public.admin_invites (email, invited_by) values (e, auth.uid())
+  on conflict (email) do nothing;
+  return 'invited';
+end;
+$$;
+
+-- Admin: withdraw an open invite.
+create or replace function public.admin_cancel_invite(p_email text)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can manage invites';
+  end if;
+  delete from public.admin_invites where email = lower(trim(coalesce(p_email, '')));
+end;
+$$;
+
+-- Admin: remove another admin. They go back to a normal account (SMME/NGO if their
+-- registered details are an organisation's, otherwise student/developer).
+create or replace function public.admin_remove(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth, pg_temp
+as $$
+begin
+  if public.get_current_profile_role() <> 'admin' then
+    raise exception 'Only admins can remove admins';
+  end if;
+  if p_user_id = auth.uid() then
+    raise exception 'You can''t remove yourself. Ask another admin.';
+  end if;
+  if (select count(*) from public.profiles where role = 'admin') <= 1 then
+    raise exception 'Geek Archive needs at least one admin';
+  end if;
+  update public.profiles
+     set role = case
+       when exists (select 1 from public.account_details d
+                     where d.user_id = p_user_id and d.account_type in ('smme', 'ngo')) then 'organization'
+       else 'youth'
+     end
+   where id = p_user_id and role = 'admin';
+  if not found then
+    raise exception 'That person isn''t an admin';
+  end if;
+end;
+$$;
+
+grant execute on function public.admin_list_team() to authenticated;
+grant execute on function public.admin_invite(text) to authenticated;
+grant execute on function public.admin_cancel_invite(text) to authenticated;
+grant execute on function public.admin_remove(uuid) to authenticated;
